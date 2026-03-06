@@ -1,9 +1,10 @@
 import streamlit as st
 import requests
+import ipaddress
 
 # --- הגדרות דף ---
 st.set_page_config(
-    page_title="Sentinel IP Intel v1.3",
+    page_title="Sentinel IP Intel v1.4",
     page_icon="🛡️",
     layout="wide"
 )
@@ -26,36 +27,43 @@ BENIGN_IPS = {
     "9.9.9.9": "Quad9 DNS"
 }
 
-# --- עיצוב CSS משופר לקריאות RTL וצבעים עזים ---
+# --- עיצוב CSS משופר: רקע Midnight, טקסט גדול וקריא ---
 st.markdown("""
     <style>
     .main, .stApp {
         direction: rtl;
         text-align: right;
+        font-size: 1.1rem; /* הגדלת הכתב הכללי */
     }
     
-    /* רקע כהה נקי לשיפור הניגודיות */
+    /* רקע Midnight Blue - פחות שחור, יותר מקצועי */
     .stApp {
-        background-color: #0d1117;
+        background-color: #1a1c24;
         color: #ffffff;
     }
 
+    /* הגדלת כותרות */
+    h1 { font-size: 3rem !important; color: #00f2fe !important; }
+    h2 { font-size: 2rem !important; }
+    h3 { font-size: 1.5rem !important; color: #58a6ff !important; }
+
     /* עיצוב כרטיסי המדדים (Metrics) */
     [data-testid="stMetric"] {
-        background-color: #161b22;
-        padding: 20px;
-        border-radius: 12px;
-        border: 1px solid #30363d;
+        background-color: #242933;
+        padding: 25px;
+        border-radius: 15px;
+        border: 1px solid #3d4451;
         text-align: center;
     }
     
-    /* טקסט לבן בוהק למדדים */
+    /* טקסט בתוך המדדים - גדול וברור */
     [data-testid="stMetricLabel"] {
-        color: #c9d1d9 !important; 
-        font-size: 1.1em !important;
+        color: #aeb9c7 !important; 
+        font-size: 1.3rem !important;
     }
     [data-testid="stMetricValue"] {
-        color: #58a6ff !important; /* כחול בוהק לנתון המספרי */
+        color: #ffffff !important; 
+        font-size: 2.5rem !important; /* הגדלת המספרים */
         font-weight: bold !important;
     }
     
@@ -63,28 +71,21 @@ st.markdown("""
     input {
         direction: ltr !important;
         text-align: left !important;
-        background-color: #010409 !important;
+        background-color: #0d1117 !important;
         color: #ffffff !important;
-        border: 1px solid #30363d !important;
+        font-size: 1.2rem !important;
+        border: 2px solid #3d4451 !important;
     }
     
-    /* כותרות טורקיז */
-    h1, h2, h3 {
-        color: #58a6ff;
-    }
-    
-    /* עיצוב כפתור Submit */
+    /* כפתור Submit גדול */
     .stButton>button {
         width: 100%;
-        background-color: #238636; /* ירוק "אישור" מקצועי */
-        color: white;
+        background-color: #00f2fe;
+        color: #000000;
         font-weight: bold;
-        border: none;
-        padding: 12px;
-    }
-    .stButton>button:hover {
-        background-color: #2ea043;
-        color: white;
+        font-size: 1.3rem;
+        border-radius: 10px;
+        padding: 15px;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -94,18 +95,26 @@ st.title("🛡️ Sentinel IP Intelligence")
 st.subheader("מערכת ניתוח איומים - צוות ה-SOC")
 st.divider()
 
-# --- בדיקת פרמטר IP מה-URL (עבור התוסף) ---
+# --- בדיקת פרמטר IP מה-URL ---
 ip_from_url = st.query_params.get("ip", "")
 
-# --- טופס חיפוש (מאפשר לחיצה על ENTER) ---
-with st.form("search_form", clear_on_submit=False):
+# --- פונקציית ולידציה ל-IP ---
+def is_valid_ip(ip):
+    try:
+        ipaddress.ip_address(ip)
+        return True
+    except ValueError:
+        return False
+
+# --- טופס חיפוש ---
+with st.form("search_form"):
     ip_input = st.text_input("הזן כתובת IP לניתוח:", value=ip_from_url, placeholder="לדוגמה: 8.8.8.8")
     submitted = st.form_submit_button("🚀 הרץ ניתוח איומים")
 
 def get_data(ip):
     vt_url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
     abuse_url = 'https://api.abuseipdb.com/api/v2/check'
-    proxy_url = f"https://proxycheck.io/v2/{ip}?key={PROXYCHECK_KEY}&vpn=1&asn=1"
+    proxy_url = f"https://proxycheck.io/v2/{ip}?key={PROXYCHECK_KEY}&vpn=1"
     
     vt_res = requests.get(vt_url, headers={"x-apikey": VT_API_KEY}, timeout=10).json()
     abuse_res = requests.get(abuse_url, headers={'Key': ABUSE_API_KEY}, params={'ipAddress': ip}, timeout=10).json()
@@ -113,43 +122,41 @@ def get_data(ip):
     
     return vt_res, abuse_res, proxy_res
 
-# הרצת הניתוח במידה והטופס נשלח (בכפתור או ב-Enter)
+# הרצה
 if submitted or (ip_from_url and not submitted):
-    if ip_input:
-        with st.spinner('מנתח נתונים...'):
+    if not ip_input:
+        st.warning("נא להזין כתובת IP.")
+    elif not is_valid_ip(ip_input):
+        # טיפול בשגיאת כתובת לא תקינה
+        st.error(f"❌ שגיאה: הכתובת `{ip_input}` אינה כתובת IP חוקית.")
+        st.info("כתובת תקינה חייבת להכיל 4 מספרים בין 0 ל-255 המופרדים בנקודה (למשל: 1.2.3.4).")
+    else:
+        with st.spinner('מבצע חקירה...'):
             try:
                 # בדיקה מול רשימה לבנה
                 if ip_input in BENIGN_IPS:
-                    st.info(f"ℹ️ שירות מוכר ובטוח: **{BENIGN_IPS[ip_input]}**")
+                    st.info(f"ℹ️ שירות בטוח: **{BENIGN_IPS[ip_input]}**")
                     m1, m2, m3 = st.columns(3)
-                    m1.metric("VirusTotal", "נקי", delta="Whitelisted")
+                    m1.metric("VirusTotal", "0", delta="Safe")
                     m2.metric("AbuseIPDB", "0%", delta="Safe")
-                    m3.metric("תשתית", "DNS Public")
+                    m3.metric("תשתית", "Trusted")
                 else:
                     vt, abuse, proxy = get_data(ip_input)
+                    mal = vt.get('data', {}).get('attributes', {}).get('last_analysis_stats', {}).get('malicious', 0)
+                    score = abuse.get('data', {}).get('abuseConfidenceScore', 0)
                     
-                    mal_count = vt.get('data', {}).get('attributes', {}).get('last_analysis_stats', {}).get('malicious', 0)
-                    abuse_score = abuse.get('data', {}).get('abuseConfidenceScore', 0)
-                    
-                    # לוגיקת זיהוי איומים
-                    if mal_count > 1 or abuse_score > 50:
-                        st.error(f"❌ איום זוהה בכתובת {ip_input}!")
+                    if mal > 1 or score > 50:
+                        st.error(f"🚨 איום זוהה! הכתובת {ip_input} בסיכון גבוה.")
                     else:
-                        st.success(f"✅ הכתובת {ip_input} נראית נקייה.")
+                        st.success(f"✅ הכתובת {ip_input} נראית בטוחה.")
 
-                    # הצגת נתונים בכרטיסים קריאים
                     m1, m2, m3 = st.columns(3)
-                    m1.metric("זיהויים (VT)", f"{mal_count}")
-                    m2.metric("ציון Abuse", f"{abuse_score}%")
-                    
+                    m1.metric("זיהויים (VT)", f"{mal}")
+                    m2.metric("ציון Abuse", f"{score}%")
                     is_vpn = proxy.get(ip_input, {}).get('proxy', 'no')
-                    m3.metric("סוג חיבור", "VPN/Proxy" if is_vpn == "yes" else "Standard")
+                    m3.metric("VPN/Proxy", "כן ✅" if is_vpn == "yes" else "לא ❌")
 
-                    st.divider()
-                    with st.expander("📂 נתוני Raw לניתוח מעמיק"):
+                    with st.expander("📂 נתוני Raw"):
                         st.json(abuse.get('data', {}))
-
             except Exception as e:
-                st.error(f"שגיאה: {e}")
-    else:
-        st.warning("נא להזין IP.")
+                st.error(f"שגיאת מערכת: {e}")
