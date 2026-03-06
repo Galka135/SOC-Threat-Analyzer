@@ -34,6 +34,10 @@ st.subheader("כלי חקירה מאובטח לצוות ה-SOC")
 st.divider()
 
 ip_input = st.text_input("הזן כתובת IP לניתוח:", placeholder="לדוגמה: 8.8.8.8")
+# בדוק אם יש IP ב-URL (מגיע מהתוסף)
+query_params = st.query_params
+if "ip" in query_params and not ip_input:
+    ip_input = query_params["ip"]
 
 def get_data(ip):
     vt_url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
