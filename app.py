@@ -131,4 +131,25 @@ if submitted or (ip_from_url and not submitted):
                     mal_count = vt.get('data', {}).get('attributes', {}).get('last_analysis_stats', {}).get('malicious', 0)
                     abuse_score = abuse.get('data', {}).get('abuseConfidenceScore', 0)
                     
-                    # לוגיקת זיהוי איו
+                    # לוגיקת זיהוי איומים
+                    if mal_count > 1 or abuse_score > 50:
+                        st.error(f"❌ איום זוהה בכתובת {ip_input}!")
+                    else:
+                        st.success(f"✅ הכתובת {ip_input} נראית נקייה.")
+
+                    # הצגת נתונים בכרטיסים קריאים
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("זיהויים (VT)", f"{mal_count}")
+                    m2.metric("ציון Abuse", f"{abuse_score}%")
+                    
+                    is_vpn = proxy.get(ip_input, {}).get('proxy', 'no')
+                    m3.metric("סוג חיבור", "VPN/Proxy" if is_vpn == "yes" else "Standard")
+
+                    st.divider()
+                    with st.expander("📂 נתוני Raw לניתוח מעמיק"):
+                        st.json(abuse.get('data', {}))
+
+            except Exception as e:
+                st.error(f"שגיאה: {e}")
+    else:
+        st.warning("נא להזין IP.")
