@@ -9,9 +9,10 @@ st.set_page_config(
 )
 
 # --- API Keys ---
-VT_API_KEY = "31128fef437778f46b0015d72005a2659abe788417d33a52298aac7ff0c04f15"
-PROXYCHECK_KEY = "97u5c5-187597-q30v6y-70879j"
-ABUSE_API_KEY = "11c8254a8eb9f2c2e90ee7b6dfa2587f29ba0ffcf25a525dfeee36aeae1e9abd745744183bf2f4c2"
+# --- משיכת מפתחות מתוך Secrets (במקום Hardcoded) ---
+VT_API_KEY = st.secrets["VT_API_KEY"]
+PROXYCHECK_KEY = st.secrets["PROXYCHECK_KEY"]
+ABUSE_API_KEY = st.secrets["ABUSE_API_KEY"]
 
 # --- עיצוב CSS ל-RTL ורקע כהה ---
 st.markdown("""
