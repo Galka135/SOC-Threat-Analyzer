@@ -1,14 +1,10 @@
 import streamlit as st
 import requests
 import ipaddress
+import plotly.graph_objects as go
 
 # --- הגדרות דף ---
-st.set_page_config(
-    page_title="Sentinel IP Intel v2.0",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="Sentinel IP Intel v3.0", page_icon="🛡️", layout="wide", initial_sidebar_state="collapsed")
 
 # --- משיכת מפתחות ---
 try:
@@ -19,47 +15,40 @@ except Exception:
     st.error("שגיאה: מפתחות ה-API לא הוגדרו ב-Secrets.")
     st.stop()
 
-# --- רשימה לבנה ---
 BENIGN_IPS = {
-    "8.8.8.8": "Google Public DNS",
-    "8.8.4.4": "Google Public DNS",
-    "1.1.1.1": "Cloudflare DNS",
-    "1.0.0.1": "Cloudflare DNS",
-    "9.9.9.9": "Quad9 DNS"
+    "8.8.8.8": "Google Public DNS", "8.8.4.4": "Google Public DNS",
+    "1.1.1.1": "Cloudflare DNS", "1.0.0.1": "Cloudflare DNS", "9.9.9.9": "Quad9 DNS"
 }
 
-# --- CSS מתקדם: עיצוב מודרני, נקי ומרשים ---
+# --- CSS מתקדם: אנימציות, Glassmorphism ועיצוב חללי ---
 st.markdown("""
     <style>
-    /* הגדרות כלליות */
-    .main, .stApp { direction: rtl; text-align: right; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-    .stApp { background-color: #0d1117; color: #c9d1d9; }
+    .main, .stApp { direction: rtl; text-align: right; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    .stApp { background: radial-gradient(circle at 50% 0%, #1e293b 0%, #0f172a 100%); color: #e2e8f0; }
     
-    /* אזור כותרת מרכזי */
-    .header-box { text-align: center; padding: 2rem; background: linear-gradient(180deg, rgba(13,17,23,0) 0%, rgba(22,27,34,1) 100%); border-bottom: 1px solid #30363d; margin-bottom: 2rem; border-radius: 0 0 20px 20px; }
-    h1 { color: #58a6ff !important; font-size: 3.5rem !important; text-shadow: 0px 4px 10px rgba(88,166,255,0.3); margin-bottom: 0.5rem !important; }
-    .subtitle { color: #8b949e; font-size: 1.2rem; }
+    /* כותרת זוהרת */
+    .title-box { text-align: center; padding: 2rem; margin-bottom: 2rem; animation: fadeIn 1s ease-in-out; }
+    h1 { color: #38bdf8 !important; font-size: 4rem !important; text-shadow: 0 0 20px rgba(56, 189, 248, 0.4); font-weight: 900 !important; }
+    .subtitle { color: #94a3b8; font-size: 1.3rem; letter-spacing: 1px; }
 
-    /* כרטיסי מדדים (Metrics) */
-    [data-testid="stMetric"] { background: linear-gradient(145deg, #161b22, #0d1117); padding: 20px; border-radius: 12px; border: 1px solid #30363d; box-shadow: 0 4px 15px rgba(0,0,0,0.2); text-align: center; transition: transform 0.2s; }
-    [data-testid="stMetric"]:hover { transform: translateY(-5px); border-color: #58a6ff; }
-    [data-testid="stMetricLabel"] { color: #8b949e !important; font-size: 1.1rem !important; font-weight: 600 !important; }
-    [data-testid="stMetricValue"] { color: #ffffff !important; font-size: 2.8rem !important; font-weight: 800 !important; text-shadow: 0 2px 5px rgba(0,0,0,0.5); }
+    /* כרטיסי מידע מוזהבים (Glassmorphism) */
+    .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.1); padding: 25px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); transition: all 0.3s ease; }
+    .glass-card:hover { transform: translateY(-5px); border-color: rgba(56, 189, 248, 0.5); box-shadow: 0 15px 40px rgba(56, 189, 248, 0.2); }
     
     /* עיצוב תיבת קלט */
-    input { direction: ltr !important; text-align: left !important; background-color: #010409 !important; color: #ffffff !important; font-size: 1.3rem !important; border: 2px solid #30363d !important; padding: 15px !important; border-radius: 10px !important; }
-    input:focus { border-color: #58a6ff !important; box-shadow: 0 0 10px rgba(88,166,255,0.2) !important; }
+    input { direction: ltr !important; text-align: center !important; background: rgba(15, 23, 42, 0.8) !important; color: #fff !important; font-size: 1.5rem !important; font-weight: bold !important; border: 2px solid #334155 !important; border-radius: 12px !important; padding: 15px !important; }
+    input:focus { border-color: #38bdf8 !important; box-shadow: 0 0 15px rgba(56,189,248,0.3) !important; }
     
-    /* כפתור */
-    .stButton>button { width: 100%; background-color: #238636; color: white; font-weight: bold; font-size: 1.3rem; border-radius: 10px; padding: 15px; border: none; transition: 0.3s; box-shadow: 0 4px 15px rgba(35,134,54,0.3); }
-    .stButton>button:hover { background-color: #2ea043; transform: scale(1.02); box-shadow: 0 6px 20px rgba(46,160,67,0.4); }
+    /* כפתור שיגור אקטיבי */
+    .stButton>button { background: linear-gradient(90deg, #0ea5e9, #2563eb); color: white; font-size: 1.4rem; font-weight: bold; border-radius: 12px; border: none; padding: 12px; transition: all 0.3s; box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4); }
+    .stButton>button:hover { transform: scale(1.02); box-shadow: 0 8px 25px rgba(37, 99, 235, 0.6); }
+    
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
     </style>
     """, unsafe_allow_html=True)
 
-# --- אזור כותרת (Header) ---
-st.markdown('<div class="header-box"><h1>🛡️ Sentinel IP Intel</h1><p class="subtitle">מערכת מודיעין סייבר מתקדמת לצוות ה-SOC</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="title-box"><h1>🛡️ Sentinel Cyber Node</h1><p class="subtitle">ניתוח איומים ויזואלי בזמן אמת</p></div>', unsafe_allow_html=True)
 
-# --- פונקציות ---
 ip_from_url = st.query_params.get("ip", "")
 
 def is_valid_ip(ip):
@@ -69,83 +58,98 @@ def is_valid_ip(ip):
     except ValueError:
         return False
 
-def get_data(ip):
-    vt_url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
-    abuse_url = 'https://api.abuseipdb.com/api/v2/check'
-    proxy_url = f"https://proxycheck.io/v2/{ip}?key={PROXYCHECK_KEY}&vpn=1&asn=1"
-    
-    vt_res = requests.get(vt_url, headers={"x-apikey": VT_API_KEY}, timeout=10).json()
-    abuse_res = requests.get(abuse_url, headers={'Key': ABUSE_API_KEY}, params={'ipAddress': ip}, timeout=10).json()
-    proxy_res = requests.get(proxy_url, timeout=10).json()
-    
-    return vt_res, abuse_res, proxy_res
+# --- פונקציה לייצור ספידומטר (Gauge Chart) ---
+def create_gauge(score):
+    color = "#10b981" # ירוק
+    if score > 50: color = "#ef4444" # אדום
+    elif score > 10: color = "#f59e0b" # כתום
 
-# --- אזור חיפוש (מסודר במרכז) ---
-col_space_right, col_search, col_space_left = st.columns([1, 2, 1])
-with col_search:
+    fig = go.Figure(go.Indicator(
+        mode = "gauge+number",
+        value = score,
+        number = {'suffix': "%", 'font': {'size': 50, 'color': color, 'family': 'Arial Black'}},
+        gauge = {
+            'axis': {'range': [0, 100], 'tickwidth': 2, 'tickcolor': "white"},
+            'bar': {'color': color, 'thickness': 0.75},
+            'bgcolor': "rgba(0,0,0,0)",
+            'borderwidth': 0,
+            'steps': [
+                {'range': [0, 15], 'color': 'rgba(16, 185, 129, 0.15)'},
+                {'range': [15, 50], 'color': 'rgba(245, 158, 11, 0.15)'},
+                {'range': [50, 100], 'color': 'rgba(239, 68, 68, 0.15)'}
+            ]
+        }
+    ))
+    fig.update_layout(height=300, margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", font={'color': "white"})
+    return fig
+
+# --- אזור חיפוש ---
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
     with st.form("search_form"):
-        ip_input = st.text_input("הזן כתובת IP לניתוח מהיר:", value=ip_from_url, placeholder="לדוגמה: 8.8.8.8", label_visibility="collapsed")
-        submitted = st.form_submit_button("🔍 סרוק כתובת")
+        ip_input = st.text_input("הזן IP:", value=ip_from_url, placeholder="8.8.8.8", label_visibility="collapsed")
+        submitted = st.form_submit_button("⚡ הפעל סריקה מבצעית")
 
-st.write("") # מרווח
+st.markdown("<br>", unsafe_allow_html=True)
 
-# --- אזור תוצאות ---
 if submitted or (ip_from_url and not submitted):
-    if not ip_input:
-        st.warning("נא להזין כתובת IP.")
-    elif not is_valid_ip(ip_input):
-        st.error(f"❌ שגיאה: `{ip_input}` אינה כתובת IP חוקית. אנא ודא שהכתובת תקינה (למשל 1.2.3.4).")
+    if not ip_input or not is_valid_ip(ip_input):
+        st.error("❌ הכתובת אינה חוקית.")
     else:
-        with st.spinner('מתחבר למאגרי המודיעין...'):
+        with st.spinner('מנתח נתוני עומק...'):
             try:
                 if ip_input in BENIGN_IPS:
-                    st.success(f"✅ **שירות בטוח (Whitelisted):** {BENIGN_IPS[ip_input]}")
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("VirusTotal", "0", delta="Safe")
-                    m2.metric("AbuseIPDB", "0%", delta="Safe")
-                    m3.metric("VPN/Proxy", "לא ❌")
+                    st.success(f"✅ **שירות מאומת ובטוח:** {BENIGN_IPS[ip_input]}")
+                    st.plotly_chart(create_gauge(0), use_container_width=True)
                 else:
-                    vt, abuse, proxy = get_data(ip_input)
-                    mal = vt.get('data', {}).get('attributes', {}).get('last_analysis_stats', {}).get('malicious', 0)
-                    score = abuse.get('data', {}).get('abuseConfidenceScore', 0)
-                    is_vpn = proxy.get(ip_input, {}).get('proxy', 'no')
-                    provider = proxy.get(ip_input, {}).get('provider', 'N/A')
-                    country = abuse.get('data', {}).get('countryCode', 'N/A')
+                    vt_res = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip_input}", headers={"x-apikey": VT_API_KEY}).json()
+                    abuse_res = requests.get('https://api.abuseipdb.com/api/v2/check', headers={'Key': ABUSE_API_KEY}, params={'ipAddress': ip_input}).json()
+                    proxy_res = requests.get(f"https://proxycheck.io/v2/{ip_input}?key={PROXYCHECK_KEY}&vpn=1").json()
                     
-                    # חיווי סיכון מרכזי
-                    if mal > 1 or score > 50:
-                        st.error(f"🚨 **איום קריטי!** הכתובת `{ip_input}` מהווה סיכון אבטחה.")
-                    elif mal > 0 or score > 10:
-                        st.warning(f"⚠️ **חשוד:** הכתובת `{ip_input}` דורשת בדיקה נוספת.")
-                    else:
-                        st.success(f"✅ **נקי:** הכתובת `{ip_input}` לא מופיעה במאגרי האיומים.")
+                    mal = vt_res.get('data', {}).get('attributes', {}).get('last_analysis_stats', {}).get('malicious', 0)
+                    total_scans = sum(vt_res.get('data', {}).get('attributes', {}).get('last_analysis_stats', {}).values())
+                    score = abuse_res.get('data', {}).get('abuseConfidenceScore', 0)
+                    is_vpn = proxy_res.get(ip_input, {}).get('proxy', 'no')
+                    country = abuse_res.get('data', {}).get('countryCode', 'N/A')
+                    usage_type = abuse_res.get('data', {}).get('usageType', 'Unknown')
 
-                    # מדד גרפי (Progress Bar)
-                    st.write(f"**רמת ביטחון בדיווחי קהילה (AbuseIPDB): {score}%**")
-                    st.progress(score / 100)
-                    st.write("") # מרווח
-
-                    # מדדים כרטיסיות
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("זיהויים (VT)", f"{mal}")
-                    m2.metric("ציון Abuse", f"{score}%")
-                    m3.metric("מקור תוקף", f"{country}")
-                    m4.metric("VPN/Proxy", "כן ✅" if is_vpn == "yes" else "לא ❌")
-
-                    st.markdown("---")
-
-                    # מידע טכני בלשוניות (Tabs)
-                    st.write("### 🗂️ נתוני תשתית וחקירה")
-                    tab1, tab2 = st.tabs(["🌐 מידע תשתית (ISP)", "💻 Raw JSON Data"])
+                    # --- תצוגה ויזואלית עליונה ---
+                    gauge_col, info_col = st.columns([1.5, 2])
                     
-                    with tab1:
-                        st.info(f"**ספק אינטרנט (Provider):** {provider}")
-                        st.info(f"**מדינה (Country Code):** {country}")
-                        if is_vpn == "yes":
-                            st.warning("שים לב: הכתובת משתמשת בשירותי הסוואה (VPN/Proxy).")
-                    
-                    with tab2:
-                        st.json(abuse.get('data', {}))
+                    with gauge_col:
+                        st.markdown("<h3 style='text-align: center; color: #94a3b8;'>מדד אמינות קהילתי (AbuseIPDB)</h3>", unsafe_allow_html=True)
+                        st.plotly_chart(create_gauge(score), use_container_width=True)
+                        
+                    with info_col:
+                        st.markdown("<h3 style='text-align: right; color: #94a3b8;'>סיכום אירוע (Executive Summary)</h3>", unsafe_allow_html=True)
+                        if mal > 1 or score > 50:
+                            st.error(f"🚨 **מצב קריטי:** הכתובת `{ip_input}` מסוכנת מאוד. מומלץ לחסום ב-Firewall באופן מיידי.")
+                        elif mal > 0 or score > 10:
+                            st.warning(f"⚠️ **דרושה עירנות:** הכתובת `{ip_input}` מראה סימנים מחשידים.")
+                        else:
+                            st.success(f"✅ **נקי מאיומים:** הכתובת `{ip_input}` נראית בטוחה לגמרי.")
+                            
+                        st.markdown(f"""
+                        <div class='glass-card'>
+                            <p style='font-size: 1.2rem; margin:0;'>🌍 <b>מקור גיאוגרפי:</b> {country}</p>
+                            <p style='font-size: 1.2rem; margin:0; margin-top:10px;'>🏢 <b>סוג שימוש:</b> {usage_type}</p>
+                            <p style='font-size: 1.2rem; margin:0; margin-top:10px;'>🥷 <b>הסוואת רשת (VPN):</b> {"כן 🔴" if is_vpn == 'yes' else "לא 🟢"}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    st.markdown("<br>", unsafe_allow_html=True)
+
+                    # --- ויזואליזציה של מנועי אנטי-וירוס ---
+                    st.markdown("### 🦠 זיהוי מנועי אנטי-וירוס (VirusTotal)")
+                    vt_col1, vt_col2 = st.columns([1, 3])
+                    with vt_col1:
+                        st.markdown(f"<h1 style='text-align:center; color: {'#ef4444' if mal > 0 else '#10b981'}; font-size: 4rem;'>{mal}</h1><p style='text-align:center; color: gray;'>מנועים זיהו כאיום</p>", unsafe_allow_html=True)
+                    with vt_col2:
+                        st.write(f"**נבדק מול {total_scans} מנועי אבטחה שונים**")
+                        progress_color = "green" if mal == 0 else "red"
+                        st.progress(mal / total_scans if total_scans > 0 else 0)
+                        if mal > 0:
+                            st.caption("שים לב: זיהוי בודד (1) עשוי להיות False Positive. זיהויים מרובים מצביעים על איום ממשי.")
 
             except Exception as e:
                 st.error(f"שגיאת תקשורת: {e}")
