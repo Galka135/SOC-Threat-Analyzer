@@ -4,13 +4,13 @@ import ipaddress
 import plotly.graph_objects as go
 
 # --- הגדרות דף ---
-st.set_page_config(page_title="Sentinel IP Intel v3.3", page_icon="🛡️", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Sentinel IP Intel v3.4", page_icon="🛡️", layout="wide", initial_sidebar_state="collapsed")
 
 # --- משיכת מפתחות מתוך Secrets ---
 try:
     VT_API_KEY = st.secrets["VT_API_KEY"]
     ABUSE_API_KEY = st.secrets["ABUSE_API_KEY"]
-    VPNAPI_KEY = st.secrets["VPNAPI_KEY"] # המפתח החדש שלך
+    VPNAPI_KEY = st.secrets["VPNAPI_KEY"]
 except Exception:
     st.error("שגיאה: מפתחות ה-API לא הוגדרו ב-Secrets.")
     st.stop()
@@ -20,27 +20,49 @@ BENIGN_IPS = {
     "1.1.1.1": "Cloudflare DNS", "1.0.0.1": "Cloudflare DNS", "9.9.9.9": "Quad9 DNS"
 }
 
-# --- CSS מתקדם ---
+# --- CSS מתקדם ומתוקן ---
 st.markdown("""
     <style>
     .main, .stApp { direction: rtl; text-align: right; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
     .stApp { background: radial-gradient(circle at 50% 0%, #1e293b 0%, #0f172a 100%); color: #e2e8f0; }
+    
     .title-box { text-align: center; padding: 2rem; margin-bottom: 2rem; }
-    h1 { color: #38bdf8 !important; font-size: 4rem !important; text-shadow: 0 0 20px rgba(56, 189, 248, 0.4); font-weight: 900 !important; }
+    h1 { color: #38bdf8 !important; font-size: 4rem !important; text-shadow: 0 0 20px rgba(56, 189, 248, 0.4); font-weight: 900 !important; margin-top: 10px; }
     .subtitle { color: #94a3b8; font-size: 1.3rem; letter-spacing: 1px; }
+    
     .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.1); padding: 25px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); }
     .intel-summary { background: rgba(16, 185, 129, 0.1); border-right: 4px solid #10b981; padding: 15px; border-radius: 8px; margin-top: 15px; font-size: 1.15rem; line-height: 1.6; }
     
-    div[data-baseweb="input"] { background-color: #0f172a !important; border: 2px solid #3b82f6 !important; border-radius: 10px !important; }
-    div[data-baseweb="input"] input { color: #ffffff !important; font-size: 1.5rem !important; font-weight: bold !important; text-align: center !important; -webkit-text-fill-color: #ffffff !important; }
+    /* === תיקון סופי ועוצמתי לשורת הקלט (Input) === */
+    [data-testid="stTextInput"] div[data-baseweb="input"] { 
+        background-color: #0f172a !important; 
+        border: 2px solid #3b82f6 !important; 
+        border-radius: 10px !important; 
+    }
+    [data-testid="stTextInput"] input { 
+        color: #ffffff !important; 
+        -webkit-text-fill-color: #ffffff !important; 
+        font-size: 1.5rem !important; 
+        font-weight: bold !important; 
+        text-align: center !important; 
+        background-color: transparent !important;
+    }
     
+    /* === עיצוב כפתור הפעלה === */
     button[kind="primary"] { background: linear-gradient(90deg, #0ea5e9, #2563eb) !important; color: white !important; font-size: 1.5rem !important; font-weight: bold !important; border-radius: 12px !important; border: none !important; padding: 10px 20px !important; box-shadow: 0 4px 15px rgba(37, 99, 235, 0.5) !important; }
     button[kind="primary"]:hover { background: linear-gradient(90deg, #38bdf8, #3b82f6) !important; box-shadow: 0 6px 20px rgba(56, 189, 248, 0.7) !important; }
     button[kind="primary"] p { color: white !important; font-size: 1.4rem !important; }
     </style>
     """, unsafe_allow_html=True)
 
-st.markdown('<div class="title-box"><h1>🛡️ Sentinel Cyber Node</h1><p class="subtitle">ניתוח איומים ויזואלי בזמן אמת</p></div>', unsafe_allow_html=True)
+# --- שילוב הלוגו בכותרת ---
+st.markdown('''
+<div class="title-box">
+    <img src="https://i.ibb.co/k7d9cgP/Gemini-Generated-Image-xqnp86xqnp86xqnp.png" width="160" style="border-radius: 20px; box-shadow: 0 0 30px rgba(56, 189, 248, 0.5); margin-bottom: 10px;">
+    <h1>🛡️ Sentinel Cyber Node</h1>
+    <p class="subtitle">מערכת מודיעין איומים - צוות SOC</p>
+</div>
+''', unsafe_allow_html=True)
 
 ip_from_url = st.query_params.get("ip", "")
 
@@ -102,14 +124,10 @@ if submitted or (ip_from_url and not submitted):
                     st.success(f"✅ **שירות מאומת ובטוח:** {BENIGN_IPS[ip_input]}")
                     st.plotly_chart(create_gauge(0), use_container_width=True)
                 else:
-                    # --- קריאות API משולבות ---
                     vt_res = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip_input}", headers={"x-apikey": VT_API_KEY}).json()
                     abuse_res = requests.get('https://api.abuseipdb.com/api/v2/check', headers={'Key': ABUSE_API_KEY}, params={'ipAddress': ip_input}).json()
-                    
-                    # השילוב החדש של VPNAPI.io
                     vpnapi_res = requests.get(f"https://vpnapi.io/api/{ip_input}?key={VPNAPI_KEY}").json()
                     
-                    # חילוץ נתוני אבטחה מ-VPNAPI
                     security = vpnapi_res.get("security", {})
                     masking_types = []
                     if security.get("vpn"): masking_types.append("VPN")
@@ -117,7 +135,6 @@ if submitted or (ip_from_url and not submitted):
                     if security.get("tor"): masking_types.append("TOR Node")
                     if security.get("relay"): masking_types.append("Relay")
                     
-                    # חילוץ ספק ומדינה מ-VPNAPI (יותר מדויק)
                     network = vpnapi_res.get("network", {})
                     provider = network.get("autonomous_system_organization", abuse_res.get('data', {}).get('isp', 'לא ידוע'))
                     location = vpnapi_res.get("location", {})
@@ -144,7 +161,6 @@ if submitted or (ip_from_url and not submitted):
                         else:
                             st.success(f"✅ **נקי מאיומים:** הכתובת נראית בטוחה לגמרי.")
                             
-                        # תצוגת VPN מעודכנת
                         if masking_types:
                             vpn_color = "#ef4444"
                             vpn_text = f"כן ({', '.join(masking_types)}) 🔴"
