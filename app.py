@@ -150,4 +150,72 @@ if submitted or (ip_from_url and not submitted):
             try:
                 if ip_input in BENIGN_IPS:
                     st.success(f"✅ **שירות מאומת ובטוח:** {BENIGN_IPS[ip_input]}")
-                    st.plotly_chart(create_gauge
+                    st.plotly_chart(create_gauge(0), use_container_width=True)
+                else:
+                    vt_res = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip_input}", headers={"x-apikey": VT_API_KEY}).json()
+                    abuse_res = requests.get('https://api.abuseipdb.com/api/v2/check', headers={'Key': ABUSE_API_KEY}, params={'ipAddress': ip_input}).json()
+                    vpnapi_res = requests.get(f"https://vpnapi.io/api/{ip_input}?key={VPNAPI_KEY}").json()
+                    
+                    security = vpnapi_res.get("security", {})
+                    masking_types = []
+                    if security.get("vpn"): masking_types.append("VPN")
+                    if security.get("proxy"): masking_types.append("Proxy")
+                    if security.get("tor"): masking_types.append("TOR Node")
+                    if security.get("relay"): masking_types.append("Relay")
+                    
+                    network = vpnapi_res.get("network", {})
+                    provider = network.get("autonomous_system_organization", abuse_res.get('data', {}).get('isp', 'לא ידוע'))
+                    location = vpnapi_res.get("location", {})
+                    country = location.get("country", abuse_res.get('data', {}).get('countryName', 'מיקום לא ידוע'))
+                    
+                    mal = vt_res.get('data', {}).get('attributes', {}).get('last_analysis_stats', {}).get('malicious', 0)
+                    total_scans = sum(vt_res.get('data', {}).get('attributes', {}).get('last_analysis_stats', {}).values())
+                    score = abuse_res.get('data', {}).get('abuseConfidenceScore', 0)
+                    
+                    intel_paragraph = generate_intel_summary(ip_input, abuse_res, provider, country, masking_types)
+
+                    gauge_col, info_col = st.columns([1.5, 2])
+                    
+                    with gauge_col:
+                        st.markdown("<h3 style='text-align: center; color: #94a3b8;'>מדד אמינות קהילתי</h3>", unsafe_allow_html=True)
+                        st.plotly_chart(create_gauge(score), use_container_width=True)
+                        
+                    with info_col:
+                        st.markdown("<h3 style='text-align: right; color: #94a3b8;'>סיכום אירוע (Executive Summary)</h3>", unsafe_allow_html=True)
+                        if mal > 1 or score > 50:
+                            st.error(f"🚨 **מצב קריטי:** הכתובת מסוכנת. מומלץ לחסום ב-Firewall באופן מיידי.")
+                        elif mal > 0 or score > 10:
+                            st.warning(f"⚠️ **דרושה עירנות:** הכתובת מראה סימנים מחשידים.")
+                        else:
+                            st.success(f"✅ **נקי מאיומים:** הכתובת נראית בטוחה לגמרי.")
+                            
+                        if masking_types:
+                            vpn_color = "#ef4444"
+                            vpn_text = f"כן ({', '.join(masking_types)}) 🔴"
+                        else:
+                            vpn_color = "#10b981"
+                            vpn_text = "לא 🟢"
+                        
+                        st.markdown(f"""
+                        <div class='glass-card' style='margin-top: 15px;'>
+                            <h4 style="color: #38bdf8; margin-top: 0;">🌐 נתוני תשתית ו-VPN</h4>
+                            <p style='font-size: 1.2rem; margin:0;'><b>ספק (ISP):</b> {provider}</p>
+                            <p style='font-size: 1.2rem; margin:5px 0;'><b>מיקום:</b> {country}</p>
+                            <p style='font-size: 1.2rem; margin:0; color: {vpn_color}; font-weight: bold;'><b>האם מסווה זהות?</b> {vpn_text}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        st.markdown(f"<div class='intel-summary'>🧠 <b>פרופיל מודיעיני:</b><br>{intel_paragraph}</div>", unsafe_allow_html=True)
+
+                    st.markdown("<br>", unsafe_allow_html=True)
+
+                    st.markdown("### 🦠 זיהוי מנועי אנטי-וירוס (VirusTotal)")
+                    vt_col1, vt_col2 = st.columns([1, 3])
+                    with vt_col1:
+                        st.markdown(f"<h1 style='text-align:center; color: {'#ef4444' if mal > 0 else '#10b981'}; font-size: 4rem;'>{mal}</h1><p style='text-align:center; color: gray;'>מנועים זיהו כאיום</p>", unsafe_allow_html=True)
+                    with vt_col2:
+                        st.write(f"**נבדק מול {total_scans} מנועי אבטחה שונים**")
+                        st.progress(mal / total_scans if total_scans > 0 else 0)
+
+            except Exception as e:
+                st.error(f"שגיאת תקשורת: {e}")
