@@ -110,7 +110,7 @@ if submitted or (ip_from_url and not submitted):
         with st.spinner('מרכיב פרופיל מודיעיני...'):
             try:
                 if ip_input in BENIGN_IPS:
-                    st.success(f"✅ **שירות מאומת ובטוח:** {BENIGN_IPS[ip_input]})
+                    st.success(f"✅ **שירות מאומת ובטוח:** {BENIGN_IPS[ip_input]}")
                     st.plotly_chart(create_gauge(0), use_container_width=True)
                 else:
                     vt_res = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip_input}", headers={"x-apikey": VT_API_KEY}).json()
