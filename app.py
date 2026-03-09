@@ -4,13 +4,13 @@ import ipaddress
 import plotly.graph_objects as go
 
 # --- הגדרות דף ---
-st.set_page_config(page_title="Sentinel IP Intel v3.1", page_icon="🛡️", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Sentinel IP Intel v3.3", page_icon="🛡️", layout="wide", initial_sidebar_state="collapsed")
 
-# --- משיכת מפתחות ---
+# --- משיכת מפתחות מתוך Secrets ---
 try:
     VT_API_KEY = st.secrets["VT_API_KEY"]
-    PROXYCHECK_KEY = st.secrets["PROXYCHECK_KEY"]
     ABUSE_API_KEY = st.secrets["ABUSE_API_KEY"]
+    VPNAPI_KEY = st.secrets["VPNAPI_KEY"] # המפתח החדש שלך
 except Exception:
     st.error("שגיאה: מפתחות ה-API לא הוגדרו ב-Secrets.")
     st.stop()
@@ -25,17 +25,18 @@ st.markdown("""
     <style>
     .main, .stApp { direction: rtl; text-align: right; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
     .stApp { background: radial-gradient(circle at 50% 0%, #1e293b 0%, #0f172a 100%); color: #e2e8f0; }
-    .title-box { text-align: center; padding: 2rem; margin-bottom: 2rem; animation: fadeIn 1s ease-in-out; }
+    .title-box { text-align: center; padding: 2rem; margin-bottom: 2rem; }
     h1 { color: #38bdf8 !important; font-size: 4rem !important; text-shadow: 0 0 20px rgba(56, 189, 248, 0.4); font-weight: 900 !important; }
     .subtitle { color: #94a3b8; font-size: 1.3rem; letter-spacing: 1px; }
-    .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.1); padding: 25px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); transition: all 0.3s ease; }
-    .glass-card:hover { transform: translateY(-5px); border-color: rgba(56, 189, 248, 0.5); }
+    .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.1); padding: 25px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); }
     .intel-summary { background: rgba(16, 185, 129, 0.1); border-right: 4px solid #10b981; padding: 15px; border-radius: 8px; margin-top: 15px; font-size: 1.15rem; line-height: 1.6; }
-    input { direction: ltr !important; text-align: center !important; background: rgba(15, 23, 42, 0.8) !important; color: #fff !important; font-size: 1.5rem !important; font-weight: bold !important; border: 2px solid #334155 !important; border-radius: 12px !important; padding: 15px !important; }
-    input:focus { border-color: #38bdf8 !important; box-shadow: 0 0 15px rgba(56,189,248,0.3) !important; }
-    .stButton>button { background: linear-gradient(90deg, #0ea5e9, #2563eb); color: white; font-size: 1.4rem; font-weight: bold; border-radius: 12px; border: none; padding: 12px; transition: all 0.3s; box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4); }
-    .stButton>button:hover { transform: scale(1.02); box-shadow: 0 8px 25px rgba(37, 99, 235, 0.6); }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
+    
+    div[data-baseweb="input"] { background-color: #0f172a !important; border: 2px solid #3b82f6 !important; border-radius: 10px !important; }
+    div[data-baseweb="input"] input { color: #ffffff !important; font-size: 1.5rem !important; font-weight: bold !important; text-align: center !important; -webkit-text-fill-color: #ffffff !important; }
+    
+    button[kind="primary"] { background: linear-gradient(90deg, #0ea5e9, #2563eb) !important; color: white !important; font-size: 1.5rem !important; font-weight: bold !important; border-radius: 12px !important; border: none !important; padding: 10px 20px !important; box-shadow: 0 4px 15px rgba(37, 99, 235, 0.5) !important; }
+    button[kind="primary"]:hover { background: linear-gradient(90deg, #38bdf8, #3b82f6) !important; box-shadow: 0 6px 20px rgba(56, 189, 248, 0.7) !important; }
+    button[kind="primary"] p { color: white !important; font-size: 1.4rem !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -58,48 +59,36 @@ def create_gauge(score):
         gauge = {
             'axis': {'range': [0, 100], 'tickwidth': 2, 'tickcolor': "white"},
             'bar': {'color': color, 'thickness': 0.75}, 'bgcolor': "rgba(0,0,0,0)", 'borderwidth': 0,
-            'steps': [
-                {'range': [0, 15], 'color': 'rgba(16, 185, 129, 0.15)'},
-                {'range': [15, 50], 'color': 'rgba(245, 158, 11, 0.15)'},
-                {'range': [50, 100], 'color': 'rgba(239, 68, 68, 0.15)'}
-            ]
+            'steps': [{'range': [0, 15], 'color': 'rgba(16, 185, 129, 0.15)'}, {'range': [15, 50], 'color': 'rgba(245, 158, 11, 0.15)'}, {'range': [50, 100], 'color': 'rgba(239, 68, 68, 0.15)'}]
         }
     ))
     fig.update_layout(height=300, margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", font={'color': "white"})
     return fig
 
-# --- פונקציית הפרופילאי המודיעיני ---
-def generate_intel_summary(ip, abuse_data, proxy_data):
-    provider = proxy_data.get(ip, {}).get('provider', 'ספק לא ידוע')
+def generate_intel_summary(ip, abuse_data, provider, country, masking_types):
     usage = abuse_data.get('data', {}).get('usageType', '')
     domain = abuse_data.get('data', {}).get('domain', '')
-    country = abuse_data.get('data', {}).get('countryName', 'מיקום לא ידוע')
     
     summary = f"הכתובת <b>{ip}</b> מוקצית לתשתית של <b>{provider}</b> וממוקמת גיאוגרפית ב<b>{country}</b>. "
     
-    # ניתוח סוג השימוש (Data Center vs ISP)
     if usage and any(x in usage for x in ["Data Center", "Web Hosting", "Transit"]):
-        summary += "מדובר בכתובת של חוות שרתים/ענן (Data Center). לרוב אלו שירותים לגיטימיים, אך תוקפים מרבים לשכור שרתים כאלו כדי להקים שרתי שליטה ובקרה (C2), שרתי Proxy או סריקות אוטומטיות. "
+        summary += "מדובר בכתובת של חוות שרתים/ענן (Data Center). "
     elif usage and any(x in usage for x in ["ISP", "Mobile", "Broadband"]):
-        summary += "זוהי כתובת של ספק אינטרנט ציבורי או סלולרי. סביר להניח שזהו מחשב, ראוטר ביתי או טלפון נייד של משתמש קצה (אדם פרטי) ולא שרת ייעודי. "
+        summary += "זוהי כתובת של ספק אינטרנט ציבורי או סלולרי של אדם פרטי. "
         
-    # זיהוי דומיינים ידועים (כמו טלגרם)
+    if masking_types:
+        summary += f"<br><br><b>🚨 שימו לב: הכתובת מזוהה כנקודת הסוואה מסוג {', '.join(masking_types)}. זהו דפוס פעולה אופייני לתוקפים שמנסים להסתיר את מקור התקיפה.</b>"
+        
     if domain:
-        if "telegram" in domain.lower():
-            summary += "<br><br>💡 <b>הקשר מוכר:</b> הכתובת מזוהה רשמית עם התשתית של חברת <b>Telegram</b>. תעבורה לכתובת זו היא לרוב תקשורת לגיטימית לאפליקציה, אלא אם מדובר בבוט זדוני (Telegram C2)."
-        elif any(x in domain.lower() for x in ["google", "amazon", "microsoft", "cloudflare"]):
-            summary += f"<br><br>💡 <b>הקשר מוכר:</b> הכתובת שייכת לתשתית הענן של <b>{domain}</b>."
-        else:
-            summary += f"<br><br>💡 <b>הקשר מוכר:</b> הכתובת מקושרת ישירות לדומיין <code>{domain}</code>."
+        summary += f"<br><br>💡 <b>הקשר מוכר:</b> הכתובת מקושרת ישירות לדומיין <code>{domain}</code>."
             
     return summary
 
-# --- אזור חיפוש ---
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
     with st.form("search_form"):
         ip_input = st.text_input("הזן IP:", value=ip_from_url, placeholder="8.8.8.8", label_visibility="collapsed")
-        submitted = st.form_submit_button("⚡ הפעל סריקה מבצעית")
+        submitted = st.form_submit_button("⚡ הפעל סריקה מבצעית", type="primary", use_container_width=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -113,17 +102,32 @@ if submitted or (ip_from_url and not submitted):
                     st.success(f"✅ **שירות מאומת ובטוח:** {BENIGN_IPS[ip_input]}")
                     st.plotly_chart(create_gauge(0), use_container_width=True)
                 else:
+                    # --- קריאות API משולבות ---
                     vt_res = requests.get(f"https://www.virustotal.com/api/v3/ip_addresses/{ip_input}", headers={"x-apikey": VT_API_KEY}).json()
                     abuse_res = requests.get('https://api.abuseipdb.com/api/v2/check', headers={'Key': ABUSE_API_KEY}, params={'ipAddress': ip_input}).json()
-                    proxy_res = requests.get(f"https://proxycheck.io/v2/{ip_input}?key={PROXYCHECK_KEY}&vpn=1").json()
+                    
+                    # השילוב החדש של VPNAPI.io
+                    vpnapi_res = requests.get(f"https://vpnapi.io/api/{ip_input}?key={VPNAPI_KEY}").json()
+                    
+                    # חילוץ נתוני אבטחה מ-VPNAPI
+                    security = vpnapi_res.get("security", {})
+                    masking_types = []
+                    if security.get("vpn"): masking_types.append("VPN")
+                    if security.get("proxy"): masking_types.append("Proxy")
+                    if security.get("tor"): masking_types.append("TOR Node")
+                    if security.get("relay"): masking_types.append("Relay")
+                    
+                    # חילוץ ספק ומדינה מ-VPNAPI (יותר מדויק)
+                    network = vpnapi_res.get("network", {})
+                    provider = network.get("autonomous_system_organization", abuse_res.get('data', {}).get('isp', 'לא ידוע'))
+                    location = vpnapi_res.get("location", {})
+                    country = location.get("country", abuse_res.get('data', {}).get('countryName', 'מיקום לא ידוע'))
                     
                     mal = vt_res.get('data', {}).get('attributes', {}).get('last_analysis_stats', {}).get('malicious', 0)
                     total_scans = sum(vt_res.get('data', {}).get('attributes', {}).get('last_analysis_stats', {}).values())
                     score = abuse_res.get('data', {}).get('abuseConfidenceScore', 0)
-                    is_vpn = proxy_res.get(ip_input, {}).get('proxy', 'no')
                     
-                    # הרכבת פסקת הסיכום
-                    intel_paragraph = generate_intel_summary(ip_input, abuse_res, proxy_res)
+                    intel_paragraph = generate_intel_summary(ip_input, abuse_res, provider, country, masking_types)
 
                     gauge_col, info_col = st.columns([1.5, 2])
                     
@@ -140,8 +144,24 @@ if submitted or (ip_from_url and not submitted):
                         else:
                             st.success(f"✅ **נקי מאיומים:** הכתובת נראית בטוחה לגמרי.")
                             
-                        # הצגת פסקת המודיעין בתוך תיבה מעוצבת
-                        st.markdown(f"<div class='intel-summary'>🧠 <b>פרופיל מודיעיני אוטומטי:</b><br>{intel_paragraph}</div>", unsafe_allow_html=True)
+                        # תצוגת VPN מעודכנת
+                        if masking_types:
+                            vpn_color = "#ef4444"
+                            vpn_text = f"כן ({', '.join(masking_types)}) 🔴"
+                        else:
+                            vpn_color = "#10b981"
+                            vpn_text = "לא 🟢"
+                        
+                        st.markdown(f"""
+                        <div class='glass-card' style='margin-top: 15px;'>
+                            <h4 style="color: #38bdf8; margin-top: 0;">🌐 נתוני תשתית ו-VPN</h4>
+                            <p style='font-size: 1.2rem; margin:0;'><b>ספק (ISP):</b> {provider}</p>
+                            <p style='font-size: 1.2rem; margin:5px 0;'><b>מיקום:</b> {country}</p>
+                            <p style='font-size: 1.2rem; margin:0; color: {vpn_color}; font-weight: bold;'><b>האם מסווה זהות?</b> {vpn_text}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        st.markdown(f"<div class='intel-summary'>🧠 <b>פרופיל מודיעיני:</b><br>{intel_paragraph}</div>", unsafe_allow_html=True)
 
                     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -152,8 +172,6 @@ if submitted or (ip_from_url and not submitted):
                     with vt_col2:
                         st.write(f"**נבדק מול {total_scans} מנועי אבטחה שונים**")
                         st.progress(mal / total_scans if total_scans > 0 else 0)
-                        if mal > 0:
-                            st.caption("שים לב: זיהוי בודד (1) עשוי להיות False Positive. זיהויים מרובים מצביעים על איום ממשי.")
 
             except Exception as e:
                 st.error(f"שגיאת תקשורת: {e}")
