@@ -25,13 +25,11 @@ BENIGN_IPS = {
     "1.1.1.1": "Cloudflare DNS", "1.0.0.1": "Cloudflare DNS", "9.9.9.9": "Quad9 DNS"
 }
 
-# --- CSS חסין (Hardened CSS) ---
+# --- CSS חסין ---
 st.markdown("""
     <style>
-    /* כיווניות ופונט */
     .main, .stApp { direction: rtl; text-align: right; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
     
-    /* הכרחת רקע חללי (עוקף את ברירת המחדל של Streamlit) */
     [data-testid="stAppViewContainer"] { 
         background: radial-gradient(circle at 50% 0%, #1e293b 0%, #0f172a 100%) !important; 
         color: #e2e8f0; 
@@ -45,45 +43,30 @@ st.markdown("""
     .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.1); padding: 25px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); }
     .intel-summary { background: rgba(16, 185, 129, 0.1); border-right: 4px solid #10b981; padding: 15px; border-radius: 8px; margin-top: 15px; font-size: 1.15rem; line-height: 1.6; }
     
-    /* === תיקון סופי לשורת הקלט (Input) - רקע בהיר וטקסט כחול כהה === */
+    /* כפתורי חקירה חיצוניים (Hover Effect) */
+    .pivot-btn { background: #1e293b; padding: 10px 20px; border-radius: 8px; text-decoration: none !important; font-weight: bold; transition: all 0.3s; display: inline-block; }
+    .pivot-btn-vt { color: #38bdf8; border: 1px solid #38bdf8; }
+    .pivot-btn-vt:hover { background: #38bdf8; color: #0f172a; box-shadow: 0 0 15px rgba(56,189,248,0.4); }
+    .pivot-btn-abuse { color: #ef4444; border: 1px solid #ef4444; }
+    .pivot-btn-abuse:hover { background: #ef4444; color: white; box-shadow: 0 0 15px rgba(239,68,68,0.4); }
+    
     [data-testid="stTextInput"] div[data-baseweb="input"] { 
-        background-color: #f1f5f9 !important; /* אפור-תכלת בהיר מאוד */
-        border: 2px solid #3b82f6 !important; 
-        border-radius: 10px !important; 
+        background-color: #f1f5f9 !important; border: 2px solid #3b82f6 !important; border-radius: 10px !important; 
     }
     [data-testid="stTextInput"] input { 
-        color: #0f172a !important; /* כחול כהה מאוד (Navy) לקריאות מקסימלית */
-        -webkit-text-fill-color: #0f172a !important; 
-        font-size: 1.8rem !important; 
-        font-weight: 900 !important; 
-        text-align: center !important; 
-        background-color: transparent !important;
+        color: #0f172a !important; -webkit-text-fill-color: #0f172a !important; font-size: 1.8rem !important; font-weight: 900 !important; text-align: center !important; background-color: transparent !important;
     }
     
-    /* === תיקון לכפתור הפעלה (הכרחת צבע כחול) === */
     [data-testid="stForm"] button { 
-        background: linear-gradient(90deg, #0ea5e9, #2563eb) !important; 
-        color: white !important; 
-        font-size: 1.5rem !important; 
-        font-weight: bold !important; 
-        border-radius: 12px !important; 
-        border: none !important; 
-        padding: 10px 20px !important; 
-        box-shadow: 0 4px 15px rgba(37, 99, 235, 0.5) !important; 
-        width: 100% !important;
+        background: linear-gradient(90deg, #0ea5e9, #2563eb) !important; color: white !important; font-size: 1.5rem !important; font-weight: bold !important; border-radius: 12px !important; border: none !important; padding: 10px 20px !important; box-shadow: 0 4px 15px rgba(37, 99, 235, 0.5) !important; width: 100% !important;
     }
     [data-testid="stForm"] button:hover { 
-        background: linear-gradient(90deg, #38bdf8, #3b82f6) !important; 
-        box-shadow: 0 6px 20px rgba(56, 189, 248, 0.7) !important; 
+        background: linear-gradient(90deg, #38bdf8, #3b82f6) !important; box-shadow: 0 6px 20px rgba(56, 189, 248, 0.7) !important; 
     }
-    [data-testid="stForm"] button p { 
-        color: white !important; 
-        font-size: 1.4rem !important; 
-    }
+    [data-testid="stForm"] button p { color: white !important; font-size: 1.4rem !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- שילוב הלוגו בכותרת (ללא המגן הישן) ---
 st.markdown('''
 <div class="title-box">
     <img src="https://i.ibb.co/k7d9cgP/Gemini-Generated-Image-xqnp86xqnp86xqnp.png" width="160" style="border-radius: 20px; box-shadow: 0 0 30px rgba(56, 189, 248, 0.5); margin-bottom: 10px;">
@@ -206,6 +189,17 @@ if submitted or (ip_from_url and not submitted):
                         """, unsafe_allow_html=True)
 
                         st.markdown(f"<div class='intel-summary'>🧠 <b>פרופיל מודיעיני:</b><br>{intel_paragraph}</div>", unsafe_allow_html=True)
+
+                        # --- אזור כפתורי Pivoting (חיצוניים) ---
+                        vt_link = f"https://www.virustotal.com/gui/ip-address/{ip_input}"
+                        abuse_link = f"https://www.abuseipdb.com/check/{ip_input}"
+                        
+                        st.markdown(f"""
+                        <div style='margin-top: 20px; display: flex; gap: 15px; justify-content: right;'>
+                            <a href='{vt_link}' target='_blank' class='pivot-btn pivot-btn-vt'>🦠 צפה ב-VirusTotal</a>
+                            <a href='{abuse_link}' target='_blank' class='pivot-btn pivot-btn-abuse'>🚨 צפה ב-AbuseIPDB</a>
+                        </div>
+                        """, unsafe_allow_html=True)
 
                     st.markdown("<br>", unsafe_allow_html=True)
 
