@@ -3,12 +3,14 @@ import requests
 import ipaddress
 import plotly.graph_objects as go
 from datetime import datetime
+import base64
+import os
 
 # ─────────────────────────────────────────────
 #  PAGE CONFIG
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="Sentinel IP Intel",
+    page_title="WE Ankor IP Intel",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -86,7 +88,7 @@ html, body, .stApp {
 }
 .site-header .eyebrow {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.7rem;
+    font-size: 1rem;
     letter-spacing: 5px;
     color: #0af;
     text-transform: uppercase;
@@ -95,26 +97,33 @@ html, body, .stApp {
 }
 .site-header h1 {
     font-family: 'IBM Plex Mono', monospace !important;
-    font-size: 3.2rem !important;
+    font-size: 3.8rem !important;
     font-weight: 700 !important;
     color: #e8f2ff !important;
     letter-spacing: 2px;
     line-height: 1.1 !important;
     text-shadow: 0 0 60px rgba(0,150,255,0.2) !important;
-    margin: 0 !important;
+    margin: 0.5rem 0 !important;
 }
 .site-header h1 span { color: #00aaff; }
 .site-header .tagline {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.78rem;
+    font-size: 1.1rem;
     color: #3a6080;
     letter-spacing: 3px;
-    margin-top: 0.8rem;
+    margin-top: 1rem;
 }
 .header-rule {
-    width: 160px; height: 1px;
+    width: 200px; height: 2px;
     background: linear-gradient(90deg, transparent, #00aaff55, transparent);
     margin: 1.5rem auto 0;
+}
+.logo-img {
+    width: 120px;
+    height: auto;
+    border-radius: 16px;
+    box-shadow: 0 0 25px rgba(0,150,255,0.2);
+    margin-bottom: 1rem;
 }
 
 /* === SEARCH AREA === */
@@ -122,7 +131,7 @@ html, body, .stApp {
 [data-testid="stTextInput"] div[data-baseweb="input"] {
     background: rgba(0, 20, 50, 0.6) !important;
     border: 1px solid rgba(0, 150, 255, 0.35) !important;
-    border-radius: 8px !important;
+    border-radius: 10px !important;
     transition: all 0.3s ease !important;
     box-shadow: 0 0 0 0 rgba(0,150,255,0) !important;
 }
@@ -132,14 +141,14 @@ html, body, .stApp {
 }
 [data-testid="stTextInput"] input {
     font-family: 'IBM Plex Mono', monospace !important;
-    font-size: 1.7rem !important;
+    font-size: 2.2rem !important;
     font-weight: 600 !important;
     color: #00ccff !important;
     -webkit-text-fill-color: #00ccff !important;
     text-align: center !important;
     letter-spacing: 4px !important;
     background: transparent !important;
-    padding: 0.6rem 1rem !important;
+    padding: 1rem 1.5rem !important;
 }
 [data-testid="stTextInput"] input::placeholder {
     color: rgba(0,150,220,0.25) !important;
@@ -151,12 +160,13 @@ html, body, .stApp {
     background: rgba(0, 30, 70, 0.8) !important;
     color: #00ccff !important;
     border: 1px solid rgba(0,180,255,0.4) !important;
-    border-radius: 8px !important;
-    font-family: 'IBM Plex Mono', monospace !important;
-    font-size: 0.9rem !important;
-    letter-spacing: 4px !important;
+    border-radius: 10px !important;
+    font-family: 'IBM Plex Sans Hebrew', sans-serif !important;
+    font-size: 1.2rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 2px !important;
     width: 100% !important;
-    padding: 0.9rem !important;
+    padding: 1.2rem !important;
     transition: all 0.3s ease !important;
     box-shadow: 0 0 20px rgba(0,150,255,0.1) !important;
 }
@@ -167,44 +177,42 @@ html, body, .stApp {
 }
 [data-testid="stForm"] button p {
     color: #00ccff !important;
-    font-family: 'IBM Plex Mono', monospace !important;
-    font-size: 0.9rem !important;
-    letter-spacing: 4px !important;
+    font-size: 1.2rem !important;
 }
 
 /* === CARDS === */
 .card {
     background: rgba(8, 18, 38, 0.75);
     border: 1px solid rgba(0, 120, 200, 0.18);
-    border-radius: 10px;
-    padding: 1.4rem 1.6rem;
+    border-radius: 12px;
+    padding: 1.8rem 2rem;
     backdrop-filter: blur(16px);
     position: relative;
     overflow: hidden;
-    margin-bottom: 1rem;
+    margin-bottom: 1.5rem;
 }
 .card::before {
     content: '';
-    position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    position: absolute; top: 0; left: 0; right: 0; height: 2px;
     background: linear-gradient(90deg, transparent, rgba(0,180,255,0.4), transparent);
 }
 .card-eyebrow {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.65rem;
+    font-size: 0.95rem;
     letter-spacing: 3px;
     color: #00aaff;
     text-transform: uppercase;
-    opacity: 0.7;
-    margin-bottom: 1rem;
+    opacity: 0.8;
+    margin-bottom: 1.2rem;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 12px;
 }
 .card-eyebrow::after {
     content: '';
     flex: 1;
     height: 1px;
-    background: rgba(0,120,200,0.2);
+    background: rgba(0,120,200,0.3);
 }
 
 /* === DATA ROWS === */
@@ -212,28 +220,28 @@ html, body, .stApp {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    padding: 0.5rem 0;
-    border-bottom: 1px solid rgba(0,120,200,0.08);
+    padding: 0.8rem 0;
+    border-bottom: 1px solid rgba(0,120,200,0.1);
     gap: 1rem;
 }
 .data-row:last-child { border-bottom: none; }
 .data-label {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.7rem;
+    font-size: 1rem;
     letter-spacing: 1.5px;
-    color: #3a6080;
+    color: #5d89b0;
     text-transform: uppercase;
     white-space: nowrap;
     flex-shrink: 0;
 }
 .data-value {
-    font-size: 0.95rem;
+    font-size: 1.2rem;
     font-weight: 600;
-    color: #b0cce0;
+    color: #e0f0ff;
     text-align: left;
     word-break: break-all;
 }
-.data-value.mono { font-family: 'IBM Plex Mono', monospace; color: #00ccff; font-size: 0.9rem; }
+.data-value.mono { font-family: 'IBM Plex Mono', monospace; color: #00ccff; font-size: 1.15rem; }
 .data-value.danger { color: #ff5555; }
 .data-value.warning { color: #ffb020; }
 .data-value.safe { color: #00d68f; }
@@ -242,163 +250,174 @@ html, body, .stApp {
 .pill {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 3px 12px;
+    gap: 8px;
+    padding: 6px 16px;
     border-radius: 100px;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.7rem;
-    letter-spacing: 2px;
+    font-family: 'IBM Plex Sans Hebrew', sans-serif;
+    font-size: 1rem;
+    letter-spacing: 1px;
     font-weight: 700;
-    text-transform: uppercase;
 }
-.pill-danger  { background: rgba(255,60,60,0.12);  color: #ff5555; border: 1px solid rgba(255,60,60,0.3);  }
-.pill-warning { background: rgba(255,180,0,0.1);   color: #ffb020; border: 1px solid rgba(255,180,0,0.3);  }
-.pill-safe    { background: rgba(0,214,143,0.1);   color: #00d68f; border: 1px solid rgba(0,214,143,0.3);  }
-.pill-info    { background: rgba(0,170,255,0.1);   color: #00aaff; border: 1px solid rgba(0,170,255,0.3);  }
+.pill-danger  { background: rgba(255,60,60,0.15);  color: #ff5555; border: 1px solid rgba(255,60,60,0.4);  }
+.pill-warning { background: rgba(255,180,0,0.15);  color: #ffb020; border: 1px solid rgba(255,180,0,0.4);  }
+.pill-safe    { background: rgba(0,214,143,0.15);  color: #00d68f; border: 1px solid rgba(0,214,143,0.4);  }
+.pill-info    { background: rgba(0,170,255,0.15);  color: #00aaff; border: 1px solid rgba(0,170,255,0.4);  }
 
 /* === BIG METRIC === */
 .big-metric {
     text-align: center;
-    padding: 1rem 0 0.5rem;
+    padding: 1.5rem 0 1rem;
 }
 .big-metric .num {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 4rem;
+    font-size: 4.5rem;
     font-weight: 700;
     line-height: 1;
 }
 .big-metric .lbl {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.65rem;
-    letter-spacing: 2px;
-    color: #3a6080;
-    text-transform: uppercase;
-    margin-top: 4px;
+    font-family: 'IBM Plex Sans Hebrew', sans-serif;
+    font-size: 1rem;
+    letter-spacing: 1px;
+    color: #5d89b0;
+    margin-top: 8px;
 }
 
 /* === MINI METRICS ROW === */
 .metrics-row {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-    margin-top: 1rem;
+    gap: 12px;
+    margin-top: 1.5rem;
 }
 .mini-metric {
     background: rgba(0,10,30,0.5);
-    border: 1px solid rgba(0,100,180,0.12);
-    border-radius: 6px;
-    padding: 0.8rem 0.5rem;
+    border: 1px solid rgba(0,100,180,0.2);
+    border-radius: 8px;
+    padding: 1.2rem 0.5rem;
     text-align: center;
 }
-.mini-metric .mn { font-family: 'IBM Plex Mono', monospace; font-size: 1.6rem; font-weight: 700; line-height: 1; }
-.mini-metric .ml { font-family: 'IBM Plex Mono', monospace; font-size: 0.6rem; letter-spacing: 1.5px; color: #3a6080; text-transform: uppercase; margin-top: 3px; }
+.mini-metric .mn { font-family: 'IBM Plex Mono', monospace; font-size: 2.2rem; font-weight: 700; line-height: 1; }
+.mini-metric .ml { font-family: 'IBM Plex Sans Hebrew', sans-serif; font-size: 0.95rem; letter-spacing: 1px; color: #5d89b0; margin-top: 6px; }
 
 /* === INTEL SUMMARY === */
 .intel-block {
     background: rgba(0, 25, 55, 0.5);
-    border-right: 3px solid #00aaff;
-    border-radius: 0 6px 6px 0;
-    padding: 1rem 1.2rem;
-    font-size: 0.95rem;
-    line-height: 1.85;
-    color: #8ab4d0;
-    margin-top: 1rem;
+    border-right: 4px solid #00aaff;
+    border-radius: 0 8px 8px 0;
+    padding: 1.5rem;
+    font-size: 1.2rem;
+    line-height: 1.8;
+    color: #b0d4f0;
+    margin-top: 1.5rem;
 }
 
 /* === PROGRESS BAR === */
-.prog-item { margin: 0.5rem 0; }
+.prog-item { margin: 1rem 0; }
 .prog-header {
     display: flex;
     justify-content: space-between;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.68rem;
+    font-family: 'IBM Plex Sans Hebrew', sans-serif;
+    font-size: 1.05rem;
     letter-spacing: 1px;
-    color: #3a6080;
-    text-transform: uppercase;
-    margin-bottom: 4px;
+    color: #5d89b0;
+    margin-bottom: 6px;
 }
 .prog-track {
-    background: rgba(0,80,150,0.12);
-    border-radius: 3px;
-    height: 6px;
+    background: rgba(0,80,150,0.15);
+    border-radius: 4px;
+    height: 10px;
     overflow: hidden;
 }
-.prog-fill { height: 6px; border-radius: 3px; }
+.prog-fill { height: 10px; border-radius: 4px; }
 
 /* === SECTION HEADER === */
 .section-head {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin: 2rem 0 1rem;
+    gap: 15px;
+    margin: 3rem 0 1.5rem;
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.68rem;
+    font-size: 1.1rem;
     letter-spacing: 4px;
-    color: #2a5070;
+    color: #4a7a9c;
     text-transform: uppercase;
 }
 .section-head::before, .section-head::after {
     content: '';
     flex: 1;
     height: 1px;
-    background: rgba(0,100,180,0.15);
+    background: rgba(0,100,180,0.25);
 }
 
 /* === PIVOT BUTTONS === */
-.pivot-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 1.2rem; }
+.pivot-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 2rem; justify-content: center;}
 .pv {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.68rem;
-    letter-spacing: 1.5px;
-    padding: 7px 14px;
-    border-radius: 5px;
+    font-family: 'IBM Plex Sans Hebrew', sans-serif;
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: 1px;
+    padding: 10px 20px;
+    border-radius: 8px;
     text-decoration: none !important;
     border: 1px solid;
     transition: all 0.2s ease;
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: 8px;
 }
-.pv-blue  { color: #4db8ff; border-color: rgba(77,184,255,0.3); background: rgba(77,184,255,0.06); }
-.pv-blue:hover  { background: rgba(77,184,255,0.15); color: #80ccff; }
-.pv-red   { color: #ff6b6b; border-color: rgba(255,107,107,0.3); background: rgba(255,107,107,0.06); }
-.pv-red:hover   { background: rgba(255,107,107,0.15); color: #ff9999; }
-.pv-orange{ color: #ff9f43; border-color: rgba(255,159,67,0.3); background: rgba(255,159,67,0.06); }
-.pv-orange:hover{ background: rgba(255,159,67,0.15); color: #ffbf80; }
-.pv-green { color: #26de81; border-color: rgba(38,222,129,0.3); background: rgba(38,222,129,0.06); }
-.pv-green:hover { background: rgba(38,222,129,0.15); color: #80ffbb; }
-.pv-purple{ color: #a29bfe; border-color: rgba(162,155,254,0.3); background: rgba(162,155,254,0.06); }
-.pv-purple:hover{ background: rgba(162,155,254,0.15); color: #c8c0ff; }
+.pv-blue  { color: #4db8ff; border-color: rgba(77,184,255,0.4); background: rgba(77,184,255,0.1); }
+.pv-blue:hover  { background: rgba(77,184,255,0.25); color: #b3e0ff; }
+.pv-red   { color: #ff6b6b; border-color: rgba(255,107,107,0.4); background: rgba(255,107,107,0.1); }
+.pv-red:hover   { background: rgba(255,107,107,0.25); color: #ffcccc; }
+.pv-orange{ color: #ff9f43; border-color: rgba(255,159,67,0.4); background: rgba(255,159,67,0.1); }
+.pv-orange:hover{ background: rgba(255,159,67,0.25); color: #ffe6cc; }
+.pv-green { color: #26de81; border-color: rgba(38,222,129,0.4); background: rgba(38,222,129,0.1); }
+.pv-green:hover { background: rgba(38,222,129,0.25); color: #ccffea; }
+.pv-purple{ color: #a29bfe; border-color: rgba(162,155,254,0.4); background: rgba(162,155,254,0.1); }
+.pv-purple:hover{ background: rgba(162,155,254,0.25); color: #e6e3ff; }
 
 /* === ALERTS === */
 div[data-testid="stAlert"] {
-    border-radius: 8px !important;
+    border-radius: 10px !important;
     font-family: 'IBM Plex Sans Hebrew', sans-serif !important;
-    font-size: 0.95rem !important;
+    font-size: 1.2rem !important;
+    padding: 1rem 1.5rem !important;
 }
 
 /* === SPINNER === */
 div[data-testid="stSpinner"] p {
-    font-family: 'IBM Plex Mono', monospace !important;
-    font-size: 0.8rem !important;
-    letter-spacing: 2px !important;
+    font-family: 'IBM Plex Sans Hebrew', sans-serif !important;
+    font-size: 1.2rem !important;
+    font-weight: 600 !important;
     color: #00aaff !important;
 }
 
 /* === FOOTER === */
 .site-footer {
     text-align: center;
-    margin-top: 4rem;
-    padding: 2rem 0;
+    margin-top: 5rem;
+    padding: 3rem 0;
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.62rem;
+    font-size: 0.9rem;
     letter-spacing: 2px;
-    color: #1a3050;
+    color: #2a5070;
     text-transform: uppercase;
-    border-top: 1px solid rgba(0,100,180,0.08);
+    border-top: 1px solid rgba(0,100,180,0.15);
 }
 </style>
 """, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────
+#  IMAGE HANDLING FOR LOGO
+# ─────────────────────────────────────────────
+def get_image_base64(image_path):
+    if os.path.exists(image_path):
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode("utf-8")
+    return ""
+
+logo_base64 = get_image_base64("image_58bb38.jpg")
+img_tag = f'<img src="data:image/jpeg;base64,{logo_base64}" class="logo-img" alt="WE Ankor Logo">' if logo_base64 else ""
 
 # ─────────────────────────────────────────────
 #  HEADER
@@ -406,8 +425,9 @@ div[data-testid="stSpinner"] p {
 now = datetime.now().strftime("%Y-%m-%d  %H:%M")
 st.markdown(f"""
 <div class="site-header">
+    {img_tag}
     <div class="eyebrow">// threat intelligence platform //</div>
-    <h1>SENTINEL <span>IP</span> INTEL</h1>
+    <h1>WE Ankor <span>IP</span> Intel</h1>
     <p class="tagline">מערכת מודיעין איומים &nbsp;·&nbsp; צוות SOC &nbsp;·&nbsp; {now}</p>
     <div class="header-rule"></div>
 </div>
@@ -434,25 +454,25 @@ def create_gauge(score):
         color = "#ff5555"
     fig = go.Figure(go.Indicator(
         mode="gauge+number", value=score,
-        number={'suffix': "%", 'font': {'size': 42, 'color': color, 'family': 'IBM Plex Mono, monospace'}},
+        number={'suffix': "%", 'font': {'size': 50, 'color': color, 'family': 'IBM Plex Mono, monospace'}},
         gauge={
-            'axis': {'range': [0, 100], 'tickwidth': 1,
-                     'tickcolor': "rgba(0,120,200,0.3)",
-                     'tickfont': {'color': 'rgba(0,120,200,0.4)', 'size': 9}},
-            'bar': {'color': color, 'thickness': 0.6},
+            'axis': {'range': [0, 100], 'tickwidth': 1.5,
+                     'tickcolor': "rgba(0,120,200,0.4)",
+                     'tickfont': {'color': 'rgba(0,120,200,0.6)', 'size': 12}},
+            'bar': {'color': color, 'thickness': 0.65},
             'bgcolor': "rgba(0,0,0,0)", 'borderwidth': 0,
             'steps': [
-                {'range': [0,  15], 'color': 'rgba(0,214,143,0.07)'},
-                {'range': [15, 50], 'color': 'rgba(255,176,32,0.07)'},
-                {'range': [50,100], 'color': 'rgba(255,85,85,0.07)'},
+                {'range': [0,  15], 'color': 'rgba(0,214,143,0.1)'},
+                {'range': [15, 50], 'color': 'rgba(255,176,32,0.1)'},
+                {'range': [50,100], 'color': 'rgba(255,85,85,0.1)'},
             ]
         }
     ))
     fig.update_layout(
-        height=240,
+        height=280,
         margin=dict(l=20, r=20, t=30, b=0),
         paper_bgcolor="rgba(0,0,0,0)",
-        font={'color': "rgba(0,120,200,0.5)", 'family': 'IBM Plex Mono, monospace'}
+        font={'color': "rgba(0,120,200,0.7)", 'family': 'IBM Plex Mono, monospace'}
     )
     return fig
 
@@ -548,7 +568,7 @@ with mid:
         )
         submitted = st.form_submit_button("⟶  הפעל סריקה")
 
-st.markdown("<div style='height:1.5rem'></div>", unsafe_allow_html=True)
+st.markdown("<div style='height:2rem'></div>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
 #  MAIN SCAN LOGIC
@@ -648,7 +668,7 @@ if submitted or (ip_from_url and not submitted):
                 st.markdown(f"""
                 <div class="card">
                     <div class="card-eyebrow">abuse confidence score</div>
-                    <div style="text-align:center; margin-bottom:0.3rem">{t_pill}</div>
+                    <div style="text-align:center; margin-bottom:1rem">{t_pill}</div>
                 """, unsafe_allow_html=True)
                 st.plotly_chart(create_gauge(score), use_container_width=True)
 
@@ -753,13 +773,13 @@ if submitted or (ip_from_url and not submitted):
                     for lbl, v in ipqs_rows
                 )
                 fraud_c2 = "#ff5555" if ipqs_fraud >= 75 else "#ffb020" if ipqs_fraud >= 40 else "#00d68f"
-                no_key   = "" if IPQS_KEY else "<div style='text-align:center;font-family:IBM Plex Mono,monospace;font-size:0.65rem;color:#1a3050;letter-spacing:1px;margin-top:1rem'>API KEY NOT SET</div>"
+                no_key   = "" if IPQS_KEY else "<div style='text-align:center;font-family:IBM Plex Sans Hebrew,sans-serif;font-size:0.9rem;color:#4a7a9c;letter-spacing:1px;margin-top:1.5rem'>API KEY NOT SET</div>"
 
                 st.markdown(f"""
                 <div class="card">
                     <div class="card-eyebrow">IPQualityScore</div>
                     <div class="big-metric">
-                        <div class="num" style="color:{fraud_c2}">{ipqs_fraud}<span style="font-size:1.2rem;opacity:0.5">/100</span></div>
+                        <div class="num" style="color:{fraud_c2}">{ipqs_fraud}<span style="font-size:1.8rem;opacity:0.5">/100</span></div>
                         <div class="lbl">Fraud Score</div>
                     </div>
                     {rows_html}
@@ -782,19 +802,21 @@ if submitted or (ip_from_url and not submitted):
                     st.markdown(f"""
                     <div class="card">
                         <div class="card-eyebrow">GreyNoise</div>
-                        <div class="big-metric" style="padding-bottom:0.8rem">
-                            <div style="font-family:'IBM Plex Mono',monospace;font-size:0.9rem;font-weight:700;color:{cls_color};letter-spacing:2px">{cls_label}</div>
-                            {f'<div style="font-size:0.8rem;color:#3a6080;margin-top:4px">{name}</div>' if name else ''}
+                        <div class="big-metric" style="padding-bottom:1.5rem">
+                            <div style="font-family:'IBM Plex Mono',monospace;font-size:1.2rem;font-weight:700;color:{cls_color};letter-spacing:2px">{cls_label}</div>
+                            {f'<div style="font-size:1.05rem;color:#5d89b0;margin-top:8px">{name}</div>' if name else ''}
                         </div>
                         <div class="data-row">
                             <span class="data-label">Internet Noise</span>
-                            <span style="color:{'#ff5555' if noise else '#00d68f'};font-weight:700">{'YES' if noise else 'NO'}</span>
+                            <span style="color:{'#ff5555' if noise else '#00d68f'};font-weight:700;font-size:1.1rem">{'YES' if noise else 'NO'}</span>
                         </div>
                         <div class="data-row">
                             <span class="data-label">RIOT (Legit)</span>
-                            <span style="color:{'#00d68f' if riot else '#3a6080'};font-weight:700">{'YES' if riot else 'NO'}</span>
+                            <span style="color:{'#00d68f' if riot else '#5d89b0'};font-weight:700;font-size:1.1rem">{'YES' if riot else 'NO'}</span>
                         </div>
-                        <a href="{link}" target="_blank" class="pv pv-green" style="margin-top:1rem;display:inline-flex">🌩 GreyNoise →</a>
+                        <div style="text-align:center; margin-top:2rem">
+                            <a href="{link}" target="_blank" class="pv pv-green">🌩 GreyNoise →</a>
+                        </div>
                     </div>
                     """, unsafe_allow_html=True)
                 else:
@@ -802,7 +824,7 @@ if submitted or (ip_from_url and not submitted):
                     st.markdown(f"""
                     <div class="card">
                         <div class="card-eyebrow">GreyNoise</div>
-                        <div style="text-align:center;padding:2.5rem 0;font-family:'IBM Plex Mono',monospace;font-size:0.65rem;letter-spacing:2px;color:#1a3050">{note}</div>
+                        <div style="text-align:center;padding:4rem 0;font-family:'IBM Plex Mono',monospace;font-size:1rem;letter-spacing:2px;color:#4a7a9c">{note}</div>
                     </div>
                     """, unsafe_allow_html=True)
 
@@ -824,9 +846,9 @@ if submitted or (ip_from_url and not submitted):
                 co_row  = f"""
                 <div class="data-row">
                     <span class="data-label">Company</span>
-                    <span class="data-value" style="font-size:0.85rem">{co_name} <span style="color:#3a6080">({co_type})</span></span>
+                    <span class="data-value" style="font-size:1rem">{co_name} <span style="color:#5d89b0">({co_type})</span></span>
                 </div>""" if co_name else ""
-                no_tok = "" if IPINFO_KEY else "<div style='text-align:center;font-family:IBM Plex Mono,monospace;font-size:0.65rem;color:#1a3050;letter-spacing:1px;margin-top:1rem'>ADD TOKEN FOR FULL DATA</div>"
+                no_tok = "" if IPINFO_KEY else "<div style='text-align:center;font-family:IBM Plex Sans Hebrew,sans-serif;font-size:0.9rem;color:#4a7a9c;letter-spacing:1px;margin-top:1.5rem'>ADD TOKEN FOR FULL DATA</div>"
 
                 st.markdown(f"""
                 <div class="card">
@@ -848,12 +870,12 @@ if submitted or (ip_from_url and not submitted):
                 mal_c = "#ff5555" if mal > 0 else "#00d68f"
                 st.markdown(f"""
                 <div class="card" style="text-align:center">
-                    <div class="card-eyebrow">detections</div>
+                    <div class="card-eyebrow" style="justify-content:center">detections</div>
                     <div class="big-metric">
                         <div class="num" style="color:{mal_c}">{mal}</div>
-                        <div class="lbl">מנועים זיהו כאיום</div>
+                        <div class="lbl" style="font-size:1.1rem;margin-top:12px">מנועים זיהו כאיום</div>
                     </div>
-                    <div style="font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:#2a5070;margin-top:0.8rem;letter-spacing:1px">
+                    <div style="font-family:'IBM Plex Mono',monospace;font-size:1rem;color:#5d89b0;margin-top:1.5rem;letter-spacing:1px">
                         {total_scans} engines scanned
                     </div>
                 </div>
@@ -864,8 +886,8 @@ if submitted or (ip_from_url and not submitted):
                     ("Malicious",  vt_stats.get("malicious",  0), "#ff5555"),
                     ("Suspicious", vt_stats.get("suspicious", 0), "#ffb020"),
                     ("Harmless",   vt_stats.get("harmless",   0), "#00d68f"),
-                    ("Undetected", vt_stats.get("undetected", 0), "#2a5070"),
-                    ("Timeout",    vt_stats.get("timeout",    0), "#1a3050"),
+                    ("Undetected", vt_stats.get("undetected", 0), "#4a7a9c"),
+                    ("Timeout",    vt_stats.get("timeout",    0), "#2a5070"),
                 ]
                 bars_html = "".join(prog_bar(l, v, total_scans, c) for l, v, c in bars)
                 st.markdown(f"""
@@ -896,7 +918,7 @@ if submitted or (ip_from_url and not submitted):
 # ─────────────────────────────────────────────
 st.markdown("""
 <div class="site-footer">
-    Sentinel IP Intel &nbsp;·&nbsp; SOC Platform &nbsp;·&nbsp;
+    WE Ankor IP Intel &nbsp;·&nbsp; SOC Platform &nbsp;·&nbsp;
     VirusTotal · AbuseIPDB · VPNapi · IPQualityScore · GreyNoise · ipinfo
 </div>
 """, unsafe_allow_html=True)
