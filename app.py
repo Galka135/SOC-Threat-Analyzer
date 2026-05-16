@@ -1,4 +1,5 @@
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import requests
 import ipaddress
 from datetime import datetime
@@ -25,7 +26,6 @@ IPQS_KEY        = st.secrets.get("IPQS_KEY", "")
 GREYNOISE_KEY   = st.secrets.get("GREYNOISE_KEY", "")
 IPINFO_KEY      = st.secrets.get("IPINFO_KEY", "")
 CENSYS_PAT      = st.secrets.get("CENSYS_PAT", "")
-
 
 BENIGN_IPS = {
     "8.8.8.8":    "Google DNS",
@@ -298,6 +298,22 @@ def fetch_greynoise(ip):
         return r.json()
     except: return None
 
+def fetch_censys(ip):
+    if not CENSYS_PAT: return None
+    try:
+        if ":" in CENSYS_PAT:
+            uid, secret = CENSYS_PAT.split(":", 1)
+            auth = (uid, secret)
+            headers = {}
+        else:
+            auth = None
+            headers = {"Authorization": f"Bearer {CENSYS_PAT}"}
+        r = requests.get(f"https://search.censys.io/api/v2/hosts/{ip}", auth=auth, headers=headers, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+        return None
+    except: return None
+
 def generate_intel_summary(ip, abuse_data, provider, country, masking):
     usage = abuse_data.get('data', {}).get('usageType', '')
     lines = [f"הכתובת <b>{ip}</b> משויכת לתשתית <b>{provider}</b> וממוקמת ב<b>{country}</b>."]
@@ -358,6 +374,17 @@ if search_btn or (st.query_params.get("ip")):
                 vpn = requests.get(f"https://vpnapi.io/api/{ip}?key={VPNAPI_KEY}").json()
                 ipqs = fetch_ipqs(ip)
                 gn = fetch_greynoise(ip)
+                censys_resp = fetch_censys(ip)
+
+                # Censys Data Processing
+                censys_data = censys_resp.get("result", {}) if censys_resp else {}
+                services = censys_data.get("services", [])
+                open_ports_count = len(services)
+                ports_list = [f"{s.get('port')}/{s.get('service_name', 'Unknown')}" for s in services]
+                if not ports_list:
+                    ports_str = "No Open Ports"
+                else:
+                    ports_str = ", ".join(ports_list)
 
                 # Data processing
                 sec = vpn.get("security", {})
@@ -417,7 +444,7 @@ if search_btn or (st.query_params.get("ip")):
                             <div class="data-row"><span class="data-key">Connection Type</span><span class="data-val">{abuse.get('data', {}).get('usageType', 'Unknown')}</span></div>
                             <div class="data-row"><span class="data-key">Masking (VPN/Proxy)</span><span class="data-val" style="color:{'#FF3333' if masking else '#00FF88'}">{' / '.join(masking) if masking else 'None Detected'}</span></div>
                         </div>
-                        <div class="intel-summary">
+                        <div class="intel-summary" dir="rtl" style="text-align: right;">
                             <strong>Summary:</strong><br>
                             {generate_intel_summary(ip, abuse, provider, country, masking)}
                         </div>
@@ -426,7 +453,7 @@ if search_btn or (st.query_params.get("ip")):
                 # ─── EXTENDED INTEL ───
                 st.markdown('<div style="margin: 2rem 0 1rem; font-family:Inter; font-size:0.8rem; letter-spacing:4px; opacity:0.4; text-transform:uppercase; text-align:center;">// extended intelligence feeds //</div>', unsafe_allow_html=True)
                 
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4 = st.columns(4)
                 
                 with c1:
                     gn_status = gn.get("classification", "Unknown") if gn else "No Data"
@@ -464,6 +491,23 @@ if search_btn or (st.query_params.get("ip")):
                                 <a href="https://www.virustotal.com/gui/ip-address/{ip}" target="_blank" style="text-decoration:none; background:rgba(0,119,255,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(0,119,255,0.3);">VirusTotal Report</a>
                                 <a href="https://www.abuseipdb.com/check/{ip}" target="_blank" style="text-decoration:none; background:rgba(255,51,51,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(255,51,51,0.3);">AbuseIPDB Profile</a>
                                 <a href="https://viz.greynoise.io/ip/{ip}" target="_blank" style="text-decoration:none; background:rgba(0,255,136,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(0,255,136,0.3);">GreyNoise Visualizer</a>
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+
+                with c4:
+                    st.markdown(f"""
+                        <div class="card">
+                            <div class="card-label">Censys Data</div>
+                            <div style="text-align:center; padding:1rem 0;">
+                                <div style="font-size:2rem; font-weight:800; color:var(--accent-cyan)">{open_ports_count}</div>
+                                <div style="font-size:0.8rem; color:var(--text-muted); margin-top:5px;">Open Ports</div>
+                            </div>
+                            <div class="data-row" style="flex-direction: column; align-items: flex-start; border-bottom: none;">
+                                <span class="data-key" style="margin-bottom: 5px;">Services</span>
+                                <div style="max-height: 80px; overflow-y: auto; width: 100%;">
+                                    <span class="data-val" style="font-size:0.85rem; line-height: 1.4;">{ports_str}</span>
+                                </div>
                             </div>
                         </div>
                     """, unsafe_allow_html=True)
