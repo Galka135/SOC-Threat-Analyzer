@@ -24,6 +24,8 @@ VPNAPI_KEY      = st.secrets["VPNAPI_KEY"]
 IPQS_KEY        = st.secrets.get("IPQS_KEY", "")
 GREYNOISE_KEY   = st.secrets.get("GREYNOISE_KEY", "")
 IPINFO_KEY      = st.secrets.get("IPINFO_KEY", "")
+CENSYS_PAT      = st.secrets.get("CENSYS_PAT", "")
+
 
 BENIGN_IPS = {
     "8.8.8.8":    "Google DNS",
