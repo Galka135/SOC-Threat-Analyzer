@@ -3,10 +3,9 @@ import requests
 import ipaddress
 import plotly.graph_objects as go
 from datetime import datetime
+import concurrent.futures
 
-# ─────────────────────────────────────────────
-# PAGE CONFIGURATION
-# ─────────────────────────────────────────────
+# --- Page Config ---
 st.set_page_config(
     page_title="WE Ankor IP Intel",
     page_icon="🛡️",
@@ -14,17 +13,20 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ─────────────────────────────────────────────
-# SECRETS & SETUP
-# ─────────────────────────────────────────────
+# --- Load Secrets ---
 try:
-    VT_API_KEY    = st.secrets.get("VT_API_KEY", "dummy")
-    ABUSE_API_KEY = st.secrets.get("ABUSE_API_KEY", "dummy")
-    VPNAPI_KEY    = st.secrets.get("VPNAPI_KEY", "dummy")
+    VT_API_KEY    = st.secrets["VT_API_KEY"]
+    ABUSE_API_KEY = st.secrets["ABUSE_API_KEY"]
+    VPNAPI_KEY    = st.secrets["VPNAPI_KEY"]
 except Exception:
-    st.error("⛔ מפתחות API חסרים ב-Secrets.")
+    st.error("⛔ מפתחות API חסרים ב-Secrets (VT, Abuse, VPNAPI חובה).")
     st.stop()
 
+IPQS_KEY      = st.secrets.get("IPQS_KEY", "")
+GREYNOISE_KEY = st.secrets.get("GREYNOISE_KEY", "")
+IPINFO_KEY    = st.secrets.get("IPINFO_KEY", "")
+
+# --- Constants ---
 BENIGN_IPS = {
     "8.8.8.8":  "Google Public DNS",
     "8.8.4.4":  "Google Public DNS",
@@ -33,274 +35,291 @@ BENIGN_IPS = {
     "9.9.9.9":  "Quad9 DNS",
 }
 
-# ─────────────────────────────────────────────
-# ENTERPRISE CSS
-# ─────────────────────────────────────────────
+LOGO_B64 = "" # הוסף כאן את מחרוזת ה-Base64 שלך אם תרצה להשתמש בה
+
+# --- CSS ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=Noto+Sans+Hebrew:wght@300;400;600;700&display=swap');
 
-/* GLOBAL RESET & RTL */
 *, *::before, *::after { box-sizing: border-box; }
 html, body, .stApp {
     direction: rtl;
     text-align: right;
     font-family: 'Noto Sans Hebrew', 'IBM Plex Mono', sans-serif;
-    color: #e2e8f0;
+    color: #cdd9e5;
 }
-.stApp { background: #0b1121 !important; }
-
-/* HIDE STREAMLIT BRANDING */
+.stApp { background: #0a0f1a !important; }
+[data-testid="stAppViewContainer"] {
+    background:
+        radial-gradient(ellipse 120% 80% at 50% -20%, rgba(0,120,255,0.07) 0%, transparent 60%),
+        #0a0f1a !important;
+}
+[data-testid="stHeader"] { background: transparent !important; }
 #MainMenu, footer, [data-testid="stToolbar"] { visibility: hidden !important; }
 
-/* CYBER BACKGROUND GRID */
-[data-testid="stAppViewContainer"] {
-    background: radial-gradient(ellipse 120% 80% at 50% -20%, rgba(0,180,255,0.05) 0%, transparent 60%), #0b1121 !important;
-}
+/* GRID */
 .stApp::after {
     content: '';
     position: fixed; inset: 0; pointer-events: none; z-index: 0;
     background-image:
-        linear-gradient(rgba(0,180,255,0.02) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0,180,255,0.02) 1px, transparent 1px);
-    background-size: 30px 30px;
+        linear-gradient(rgba(0,140,255,0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,140,255,0.025) 1px, transparent 1px);
+    background-size: 40px 40px;
 }
 
-/* HEADER STYLING */
-.site-header { text-align: center; padding: 2rem 1rem 1rem; position: relative; z-index: 1; direction: ltr; }
+/* HEADER */
+.site-header { text-align: center; padding: 2.5rem 1rem 1.5rem; position: relative; z-index: 1; }
+.site-header .eyebrow {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.65rem; letter-spacing: 5px; color: #0af; opacity: 0.6;
+    text-transform: uppercase; margin-bottom: 0.8rem;
+}
 .site-header h1 {
     font-family: 'IBM Plex Mono', monospace !important;
-    font-size: 3rem !important; font-weight: 700 !important;
-    color: #f8fafc !important; letter-spacing: 2px;
-    text-shadow: 0 0 40px rgba(0, 180, 255, 0.4) !important; margin: 0 !important;
+    font-size: 2.6rem !important; font-weight: 700 !important;
+    color: #e8f2ff !important; letter-spacing: 2px; line-height: 1.1 !important;
+    text-shadow: 0 0 50px rgba(0,150,255,0.2) !important; margin: 0 !important;
 }
-.site-header h1 span { color: #00b4ff; }
+.site-header h1 span { color: #00aaff; }
+.site-header .tagline {
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem;
+    color: #3a6080; letter-spacing: 2px; margin-top: 0.6rem;
+}
 .header-rule {
-    width: 200px; height: 2px;
-    background: linear-gradient(90deg, transparent, #00b4ff, transparent);
-    margin: 1rem auto 2rem;
+    width: 160px; height: 1px;
+    background: linear-gradient(90deg, transparent, #00aaff55, transparent);
+    margin: 1.2rem auto 0;
 }
 
-/* INPUT & BUTTON STYLING */
+/* INPUT */
 [data-testid="stTextInput"] label { display: none !important; }
 [data-testid="stTextInput"] div[data-baseweb="input"] {
-    background: rgba(15, 23, 42, 0.8) !important;
-    border: 1px solid rgba(0, 180, 255, 0.3) !important;
+    background: rgba(0, 20, 50, 0.6) !important;
+    border: 1px solid rgba(0, 150, 255, 0.35) !important;
     border-radius: 8px !important; transition: all 0.3s ease !important;
 }
 [data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {
-    border-color: rgba(0, 220, 255, 0.8) !important;
-    box-shadow: 0 0 20px rgba(0, 180, 255, 0.2) !important;
+    border-color: rgba(0, 200, 255, 0.7) !important;
+    box-shadow: 0 0 25px rgba(0,180,255,0.15) !important;
 }
 [data-testid="stTextInput"] input {
     font-family: 'IBM Plex Mono', monospace !important;
-    font-size: 1.5rem !important; font-weight: 600 !important;
-    color: #00d4ff !important; -webkit-text-fill-color: #00d4ff !important;
-    text-align: center !important; letter-spacing: 3px !important;
-    padding: 0.75rem !important;
+    font-size: 1.6rem !important; font-weight: 600 !important;
+    color: #00ccff !important; -webkit-text-fill-color: #00ccff !important;
+    text-align: center !important; letter-spacing: 4px !important;
+    background: transparent !important; padding: 0.6rem 1rem !important;
 }
+[data-testid="stTextInput"] input::placeholder { color: rgba(0,150,220,0.25) !important; }
+
+/* BUTTON */
 [data-testid="stForm"] button {
-    background: rgba(0, 40, 90, 0.9) !important; color: #00d4ff !important;
-    border: 1px solid rgba(0, 180, 255, 0.5) !important; border-radius: 8px !important;
-    font-size: 1.2rem !important; font-weight: 600 !important;
-    width: 100% !important; padding: 0.5rem !important;
+    background: rgba(0, 30, 70, 0.8) !important; color: #00ccff !important;
+    border: 1px solid rgba(0,180,255,0.4) !important; border-radius: 8px !important;
+    font-family: 'IBM Plex Mono', monospace !important; font-size: 0.9rem !important;
+    letter-spacing: 4px !important; width: 100% !important; padding: 0.9rem !important;
     transition: all 0.3s ease !important;
 }
 [data-testid="stForm"] button:hover {
-    background: rgba(0, 80, 160, 0.9) !important;
-    box-shadow: 0 0 25px rgba(0, 180, 255, 0.3) !important;
+    background: rgba(0, 60, 120, 0.8) !important; border-color: #00ccff !important;
+    box-shadow: 0 0 30px rgba(0,200,255,0.2) !important;
 }
+[data-testid="stForm"] button p { color: #00ccff !important; font-family: 'IBM Plex Mono', monospace !important; font-size: 0.9rem !important; letter-spacing: 4px !important; }
 
-/* ENTERPRISE SOC CARDS */
-.soc-card {
-    background: rgba(16, 24, 39, 0.75);
-    border: 1px solid rgba(0, 180, 255, 0.15);
-    border-radius: 10px;
-    padding: 1.5rem;
-    margin-bottom: 1rem;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-    backdrop-filter: blur(5px);
-    position: relative;
-    z-index: 1;
+/* CARD */
+.card {
+    background: rgba(8, 18, 38, 0.75); border: 1px solid rgba(0, 120, 200, 0.18);
+    border-radius: 10px; padding: 1.4rem 1.6rem; height: 100%;
+    backdrop-filter: blur(16px); position: relative; overflow: hidden; margin-bottom: 1rem;
 }
-.soc-card-title {
-    font-size: 1.1rem;
-    color: #94a3b8;
-    margin-bottom: 0.5rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 1px;
+.card::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(0,180,255,0.35), transparent);
 }
-.soc-card-value {
-    font-size: 2rem;
-    font-weight: 700;
-    font-family: 'IBM Plex Mono', monospace;
+.card-eyebrow {
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; letter-spacing: 2px;
+    color: #00aaff; text-transform: uppercase; opacity: 0.8; margin-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(0,150,255,0.2); padding-bottom: 5px;
 }
-.soc-card-text {
-    font-size: 1.2rem;
-    color: #e2e8f0;
-    line-height: 1.6;
+.card-content {
+    font-size: 1.1rem; line-height: 1.6;
 }
-
-/* SEMANTIC THREAT COLORS & VERDICT BANNER */
-.verdict-banner {
-    border-radius: 10px;
-    padding: 2rem;
-    text-align: center;
-    margin-bottom: 2rem;
-    background: rgba(16, 24, 39, 0.85);
-    border: 2px solid;
-    position: relative;
-    z-index: 1;
-}
-.verdict-title {
-    font-size: 1.3rem;
-    color: #cbd5e1;
-    margin-bottom: 0.5rem;
-    font-weight: 600;
-}
-.verdict-status {
-    font-size: 3.5rem;
-    font-weight: 700;
-    letter-spacing: 2px;
-}
-
-/* Bright Green for 'Clean/Safe' */
-.color-safe { color: #00ff88 !important; }
-.glow-safe { 
-    border-color: #00ff88; 
-    box-shadow: 0 0 30px rgba(0, 255, 136, 0.15), inset 0 0 20px rgba(0, 255, 136, 0.05);
-}
-.glow-safe .verdict-status { text-shadow: 0 0 20px rgba(0, 255, 136, 0.6); color: #00ff88; }
-
-/* Neon Orange for 'Suspicious/VPN' */
-.color-vpn { color: #ff9900 !important; }
-.glow-vpn { 
-    border-color: #ff9900; 
-    box-shadow: 0 0 30px rgba(255, 153, 0, 0.15), inset 0 0 20px rgba(255, 153, 0, 0.05);
-}
-.glow-vpn .verdict-status { text-shadow: 0 0 20px rgba(255, 153, 0, 0.6); color: #ff9900; }
-
-/* Crimson Red for 'Malicious/Fraud' */
-.color-malicious { color: #ff3333 !important; }
-.glow-malicious { 
-    border-color: #ff3333; 
-    box-shadow: 0 0 30px rgba(255, 51, 51, 0.2), inset 0 0 20px rgba(255, 51, 51, 0.1);
-}
-.glow-malicious .verdict-status { text-shadow: 0 0 20px rgba(255, 51, 51, 0.6); color: #ff3333; }
-
+.safe { color: #00ffaa !important; }
+.malicious { color: #ff4444 !important; }
+.warning { color: #ffcc00 !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# --- Helper Functions ---
+def is_valid_ip(ip):
+    try:
+        ipaddress.ip_address(ip)
+        return True
+    except ValueError:
+        return False
 
-# ─────────────────────────────────────────────
-# UI COMPONENTS HELPER FUNCTIONS
-# ─────────────────────────────────────────────
-def render_header():
-    st.markdown("""
-    <div class="site-header">
-        <h1>WE Ankor <span>IP Intel</span></h1>
-        <div class="header-rule"></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-def render_verdict(status_text, threat_level):
-    """
-    threat_level: "safe", "vpn", or "malicious"
-    """
-    glow_class = f"glow-{threat_level}"
+def render_card(title, content, icon="🔍"):
     st.markdown(f"""
-    <div class="verdict-banner {glow_class}">
-        <div class="verdict-title">החלטה סופית (Verdict)</div>
-        <div class="verdict-status">{status_text}</div>
+    <div class="card">
+        <div class="card-eyebrow">{icon} {title}</div>
+        <div class="card-content">{content}</div>
     </div>
     """, unsafe_allow_html=True)
 
-def render_metric_card(title, value, color_class=""):
-    st.markdown(f"""
-    <div class="soc-card">
-        <div class="soc-card-title">{title}</div>
-        <div class="soc-card-value {color_class}">{value}</div>
-    </div>
-    """, unsafe_allow_html=True)
+# --- API Query Functions ---
+def query_virustotal(ip):
+    url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
+    headers = {"x-apikey": VT_API_KEY}
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            stats = res.json()['data']['attributes']['last_analysis_stats']
+            malicious = stats.get('malicious', 0)
+            suspicious = stats.get('suspicious', 0)
+            total = sum(stats.values())
+            if malicious > 0:
+                color = "malicious"
+            elif suspicious > 0:
+                color = "warning"
+            else:
+                color = "safe"
+            return f"<span class='{color}'>Malicious: {malicious}</span> | Suspicious: {suspicious} | Harmless: {stats.get('harmless', 0)}<br>Score: {malicious}/{total}"
+        return "שגיאה או אין מידע"
+    except Exception as e:
+        return f"Error: {e}"
 
-def render_info_card(title, text_html):
-    st.markdown(f"""
-    <div class="soc-card">
-        <div class="soc-card-title">{title}</div>
-        <div class="soc-card-text">{text_html}</div>
-    </div>
-    """, unsafe_allow_html=True)
+def query_abuseipdb(ip):
+    url = "https://api.abuseipdb.com/api/v2/check"
+    querystring = {"ipAddress": ip, "maxAgeInDays": "90"}
+    headers = {"Accept": "application/json", "Key": ABUSE_API_KEY}
+    try:
+        res = requests.get(url, headers=headers, params=querystring, timeout=5)
+        if res.status_code == 200:
+            data = res.json()['data']
+            score = data.get('abuseConfidenceScore', 0)
+            color = "malicious" if score > 50 else ("warning" if score > 0 else "safe")
+            return f"Confidence Score: <span class='{color}'><b>{score}%</b></span><br>Total Reports: {data.get('totalReports', 0)}"
+        return "שגיאה או אין מידע"
+    except Exception as e:
+        return f"Error: {e}"
 
-
-# ─────────────────────────────────────────────
-# MAIN APP FLOW
-# ─────────────────────────────────────────────
-def main():
-    render_header()
-
-    # חיפוש משתמש - שימוש ב-Form כדי שהלחיצה על כפתור האנטר תעבוד חלק
-    with st.form("search_form"):
-        col_space1, col_input, col_space2 = st.columns([1, 2, 1])
-        with col_input:
-            ip_query = st.text_input("הכנס כתובת IP לסריקה", placeholder="e.g. 8.8.8.8")
-            submit_btn = st.form_submit_button("נתח כתובת IP 🛡️")
-
-    if submit_btn and ip_query:
-        # כאן תכנס הלוגיקה שלך מול ה-APIs. 
-        # לצורך הדוגמה, נייצר תוצאה מדומיינת (Mock Data) המציגה את יכולות ה-UI החדש:
-        
-        # הדמייה של לוגיקת סיווג
-        threat_level = "safe" # יכול להיות "safe", "vpn", או "malicious"
-        verdict_text = "נקי / בטוח"
-        
-        if ip_query == "1.1.1.1":
-            threat_level = "vpn"
-            verdict_text = "חשוד / שירות VPN"
-        elif ip_query.startswith("185."):
-            threat_level = "malicious"
-            verdict_text = "זדוני / הונאה"
-
-        # 1. תצוגת הבאנר המרכזי (Verdict)
-        render_verdict(verdict_text, threat_level)
-
-        # 2. שורת מטריקות - Scores
-        m1, m2, m3, m4 = st.columns(4)
-        
-        with m1:
-            color = "color-malicious" if threat_level == "malicious" else "color-safe"
-            render_metric_card("ציון סיכון (Fraud Score)", "85/100" if threat_level == "malicious" else "0/100", color)
-        
-        with m2:
-            color = "color-vpn" if threat_level == "vpn" else "color-safe"
-            render_metric_card("זיהוי VPN / Proxy", "כן" if threat_level == "vpn" else "לא", color)
-        
-        with m3:
-            color = "color-malicious" if threat_level == "malicious" else "color-safe"
-            render_metric_card("מנועי VirusTotal", "12/89" if threat_level == "malicious" else "0/89", color)
-        
-        with m4:
-            render_metric_card("רמת ביטחון AbuseIPDB", "90%" if threat_level == "malicious" else "0%")
-
-        # 3. כרטיסיות מידע (Intelligence Summary & Infrastructure)
-        col_info1, col_info2 = st.columns(2)
-        
-        with col_info1:
-            infra_html = f"""
-            <strong>ספק אינטרנט (ISP):</strong> DigitalOcean, LLC<br>
-            <strong>מזהה ASN:</strong> AS14061<br>
-            <strong>מדינה:</strong> ארצות הברית 🇺🇸<br>
-            <strong>עיר:</strong> New York
-            """
-            render_info_card("פרטי תשתית (Infrastructure)", infra_html)
+def query_vpnapi(ip):
+    url = f"https://vpnapi.io/api/{ip}?key={VPNAPI_KEY}"
+    try:
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json().get('security', {})
+            vpn = data.get('vpn', False)
+            proxy = data.get('proxy', False)
+            tor = data.get('tor', False)
+            relay = data.get('relay', False)
             
-        with col_info2:
-            summary_html = f"""
-            כתובת ה-IP <strong>{ip_query}</strong> משויכת לשירותי ענן/הוסטינג ואינה מזוהה כספק אינטרנט ביתי.
-            <br><br>
-            בדיקות נוספות מצביעות על תעבורה שיוצאת מכתובת זו כחלק מרשת של שרתי Proxy או VPN מסחריים.
-            """
-            render_info_card("תקציר מודיעין (Intel Summary)", summary_html)
+            alerts = []
+            if vpn: alerts.append("VPN")
+            if proxy: alerts.append("Proxy")
+            if tor: alerts.append("Tor")
+            if relay: alerts.append("Relay")
+            
+            if alerts:
+                return f"<span class='warning'>⚠️ Identified as: {', '.join(alerts)}</span>"
+            return "<span class='safe'>Clean (No VPN/Proxy/Tor)</span>"
+        return "שגיאה או אין מידע"
+    except Exception as e:
+        return f"Error: {e}"
 
-if __name__ == "__main__":
-    main()
+def query_ipinfo(ip):
+    if not IPINFO_KEY: return "לא מוגדר מפתח API"
+    url = f"https://ipinfo.io/{ip}/json?token={IPINFO_KEY}"
+    try:
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            return f"<b>ORG:</b> {data.get('org', 'N/A')}<br><b>Country:</b> {data.get('country', 'N/A')} - {data.get('city', 'N/A')}"
+        return "שגיאה או אין מידע"
+    except Exception as e:
+        return f"Error: {e}"
+
+def query_ipqs(ip):
+    if not IPQS_KEY: return "לא מוגדר מפתח API"
+    url = f"https://www.ipqualityscore.com/api/json/ip/{IPQS_KEY}/{ip}"
+    try:
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            score = data.get('fraud_score', 0)
+            color = "malicious" if score > 75 else ("warning" if score > 50 else "safe")
+            return f"Fraud Score: <span class='{color}'><b>{score}</b></span><br>ISP: {data.get('ISP', 'N/A')}"
+        return "שגיאה או אין מידע"
+    except Exception as e:
+        return f"Error: {e}"
+
+def query_greynoise(ip):
+    if not GREYNOISE_KEY: return "לא מוגדר מפתח API"
+    url = f"https://api.greynoise.io/v3/community/{ip}"
+    headers = {"key": GREYNOISE_KEY}
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            classification = data.get('classification', 'unknown')
+            color = "malicious" if classification == "malicious" else ("safe" if classification == "benign" else "warning")
+            return f"Classification: <span class='{color}'><b>{classification.capitalize()}</b></span><br>Name: {data.get('name', 'N/A')}"
+        elif res.status_code == 404:
+            return "<span class='safe'>Not observed by GreyNoise</span>"
+        return "שגיאה או אין מידע"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# --- Main App UI ---
+st.markdown('<div class="site-header"><div class="eyebrow">Threat Intelligence</div><h1>WE Ankor <span>IP Intel</span></h1><div class="tagline">SOC Tier 1 Investigation Dashboard</div><div class="header-rule"></div></div>', unsafe_allow_html=True)
+
+with st.form("search_form"):
+    ip_to_check = st.text_input("הכנס כתובת IP", placeholder="e.g. 8.8.8.8")
+    submit = st.form_submit_button("חפש / סרוק 🔍")
+
+if submit:
+    ip_to_check = ip_to_check.strip()
+    
+    if not ip_to_check:
+        st.warning("אנא הכנס כתובת IP.")
+    elif not is_valid_ip(ip_to_check):
+        st.error("⛔ כתובת ה-IP אינה חוקית. אנא ודא את הפורמט.")
+    else:
+        # בדיקה האם ה-IP ברשימה הלבנה שלנו
+        if ip_to_check in BENIGN_IPS:
+            st.success(f"✅ כתובת ה-IP מזוהה ככתובת שרת בטוחה: **{BENIGN_IPS[ip_to_check]}**")
+        
+        with st.spinner("שואב נתונים ממקורות המודיעין..."):
+            # הרצת כל הבקשות במקביל באמצעות ThreadPoolExecutor
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future_vt = executor.submit(query_virustotal, ip_to_check)
+                future_abuse = executor.submit(query_abuseipdb, ip_to_check)
+                future_vpnapi = executor.submit(query_vpnapi, ip_to_check)
+                future_ipinfo = executor.submit(query_ipinfo, ip_to_check)
+                future_ipqs = executor.submit(query_ipqs, ip_to_check)
+                future_greynoise = executor.submit(query_greynoise, ip_to_check)
+                
+                vt_res = future_vt.result()
+                abuse_res = future_abuse.result()
+                vpnapi_res = future_vpnapi.result()
+                ipinfo_res = future_ipinfo.result()
+                ipqs_res = future_ipqs.result()
+                greynoise_res = future_greynoise.result()
+
+        # הצגת התוצאות בעיצוב של "כרטיסיות"
+        st.markdown(f"<h3 style='text-align: center; color: #00ccff; margin-top: 2rem;'>תוצאות עבור: {ip_to_check}</h3><hr>", unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            render_card("VirusTotal", vt_res, "🦠")
+            render_card("IPQualityScore", ipqs_res, "📊")
+            
+        with col2:
+            render_card("AbuseIPDB", abuse_res, "🚨")
+            render_card("GreyNoise", greynoise_res, "📡")
+            
+        with col3:
+            render_card("VPNAPI", vpnapi_res, "🥷")
+            render_card("IPinfo", ipinfo_res, "📍")
