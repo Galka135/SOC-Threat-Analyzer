@@ -9,7 +9,7 @@ import json
 #  APP CONFIGURATION
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="WE Ankor | SOC IP Intelligence",
+    page_title="GalK | SOC IP Intelligence",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="collapsed"
