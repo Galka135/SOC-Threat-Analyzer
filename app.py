@@ -336,7 +336,7 @@ st.markdown(f"""
     <div class="site-header">
         <div class="eyebrow">// security operations center //</div>
         <div style="display:flex; align-items:center; justify-content:center; gap:2rem;">
-            <img src="data:image/jpeg;base64,{LOGO_B64}" style="width:100px; border-radius:18px; box-shadow: 0 0 30px rgba(0,229,255,0.2);">
+            # <img src="data:image/jpeg;base64,{LOGO_B64}" style="width:100px; border-radius:18px; box-shadow: 0 0 30px rgba(0,229,255,0.2);">
             <div style="text-align:right">
                 <h1>GalK <span>IP</span> Intelligence</h1>
                 <p style="color:#94A3B8; letter-spacing:2px; margin-top:0.5rem; font-size:1.1rem;">
