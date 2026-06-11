@@ -9,7 +9,7 @@ import json
 #  APP CONFIGURATION
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="WE Ankor | SOC IP Intelligence",
+    page_title="Gal | IP-VPN Intelligence",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -378,9 +378,8 @@ st.markdown(f"""
     <div class="site-header">
         <div class="eyebrow">// security operations center //</div>
         <div style="display:flex; align-items:center; justify-content:center; gap:2rem;">
-            <img src="data:image/jpeg;base64,{LOGO_B64}" style="width:100px; border-radius:18px; box-shadow: 0 0 30px rgba(0,229,255,0.2);">
             <div style="text-align:right">
-                <h1>WE Ankor <span>IP</span> Intelligence</h1>
+                <h1>Gal <span>IP-VPN</span> Intelligence</h1>
                 <p style="color:#94A3B8; letter-spacing:2px; margin-top:0.5rem; font-size:1.1rem;">
                     מערכת ניתוח איומים בזמן אמת &nbsp;•&nbsp; {now}
                 </p>
@@ -468,7 +467,11 @@ if search_btn or (st.query_params.get("ip")):
                 vt_stats = vt.get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
                 mal_engines = vt_stats.get("malicious", 0)
                 abuse_score = abuse.get("data", {}).get("abuseConfidenceScore", 0)
-                fraud_score = ipqs.get("fraud_score", 0) if ipqs else 0
+                if ipqs and ipqs.get("success"):
+                    fraud_score = ipqs.get("fraud_score", 0)
+                else:
+                    fraud_score = 0
+                fraud_val_ui = fraud_score if (ipqs and ipqs.get("success")) else "ERR"
                 
                 # Overall Threat Score
                 overall_score = max(abuse_score, fraud_score, min(mal_engines * 20, 100))
@@ -503,7 +506,7 @@ if search_btn or (st.query_params.get("ip")):
                                     <div class="metric-label">Reports</div>
                                 </div>
                                 <div class="metric-item">
-                                    <div class="metric-val" style="color:var(--accent-cyan)">{fraud_score}</div>
+                                    <div class="metric-val" style="color:var(--accent-cyan)">{fraud_val_ui}</div>
                                     <div class="metric-label">Fraud Score</div>
                                 </div>
                             </div>
@@ -555,6 +558,9 @@ if search_btn or (st.query_params.get("ip")):
                 with c2:
                     if not IPQS_KEY:
                         ipqs_display = "<div style='font-size:1.2rem; font-weight:800; color:#FFA500; margin-top:10px;'>API Key Missing</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Please add to secrets.toml</div>"
+                    elif ipqs and not ipqs.get("success"):
+                        err_msg = ipqs.get("message", "API Error")
+                        ipqs_display = f"<div style='font-size:1rem; font-weight:600; color:#FF3333; margin-top:10px;'>{err_msg}</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>API Failure</div>"
                     else:
                         ipqs_display = f"<div style='font-size:2rem; font-weight:800; color:{'#FF3333' if fraud_score > 75 else '#00FF88'}'>{fraud_score}</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Fraud Probability</div>"
 
@@ -606,6 +612,6 @@ if search_btn or (st.query_params.get("ip")):
 # ─────────────────────────────────────────────
 st.markdown("""
     <div style="margin-top: 5rem; padding: 2rem; text-align: center; border-top: 1px solid rgba(255,255,255,0.05); color: #64748B;">
-        WE ANKOR SOC TEAM &nbsp;•&nbsp; Enterprise Threat Intelligence Platform &nbsp;•&nbsp; v2.0
+        Gal IP-VPN Check Service &nbsp;•&nbsp; Enterprise Threat Intelligence Platform &nbsp;•&nbsp; v2.0
     </div>
 """, unsafe_allow_html=True)
