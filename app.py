@@ -332,19 +332,42 @@ def fetch_censys(ip):
         return None
     except: return None
 
-def generate_intel_summary(ip, abuse_data, provider, country, masking):
+def generate_intel_summary(ip, abuse_data, provider, country, masking, vt_stats, fraud_score, gn, open_ports_count):
     usage = abuse_data.get('data', {}).get('usageType', '')
     lines = [f"הכתובת <b>{ip}</b> משויכת לתשתית <b>{provider}</b> וממוקמת ב<b>{country}</b>."]
     
     if "Data Center" in usage or "Hosting" in usage:
-        lines.append("זוהי כתובת השייכת לחוות שרתים (Data Center) — דפוס נפוץ של בוטים ותוקפים.")
+        lines.append("זוהי כתובת השייכת לחוות שרתים (Data Center) — דפוס נפוץ של בוטים ותוקפים מאורגנים.")
     elif "ISP" in usage:
-        lines.append("הכתובת משויכת לספק אינטרנט ביתי/מסחרי.")
+        lines.append("הכתובת משויכת לספק אינטרנט ביתי/מסחרי (ISP).")
 
     if masking:
-        lines.append(f"<span style='color:#FF3333'>⚠️ זוהתה כנקודת הסוואה: {', '.join(masking)}</span>")
-    
-    return "<br>".join(lines)
+        lines.append(f"<span style='color:#FF3333'>⚠️ הכתובת מזוהה כנקודת הסוואה פעילה ({', '.join(masking)}), מה שמעיד על ניסיון הסתרת זהות.</span>")
+
+    malicious = vt_stats.get("malicious", 0)
+    if malicious > 0:
+        lines.append(f"<span style='color:#FF3333'>🚨 <b>VirusTotal:</b> מנועי אבטחה מדווחים על פעילות זדונית ({malicious} מנועים).</span>")
+        
+    if fraud_score > 75:
+        lines.append(f"<span style='color:#FF3333'>🚨 <b>IPQualityScore:</b> סיכוי גבוה להונאה או בוטים (ציון {fraud_score}).</span>")
+        
+    if gn and gn.get("noise"):
+        classification = gn.get("classification", "Unknown")
+        if classification == "malicious":
+            lines.append(f"<span style='color:#FF3333'>🚨 <b>GreyNoise:</b> זוהה סורק או איום פעיל ברשת שמקורו בכתובת זו.</span>")
+        elif classification == "benign":
+            lines.append(f"<span style='color:#00FF88'>✅ <b>GreyNoise:</b> סורק ידוע ובטוח (לדוגמה חברות מחקר).</span>")
+
+    if open_ports_count > 0:
+        if open_ports_count > 5:
+            lines.append(f"🔍 <b>Censys:</b> לכתובת זו שטח פנים רחב לאינטרנט עם {open_ports_count} פורטים פתוחים.")
+        else:
+            lines.append(f"🔍 <b>Censys:</b> נמצאו {open_ports_count} שירותים פתוחים לרשת.")
+
+    if not (malicious > 0 or fraud_score > 75 or masking or (gn and gn.get("classification") == "malicious")):
+        lines.append("<span style='color:#00FF88'>✅ הכתובת כרגע מוגדרת כנקייה ואינה מעורבת בפעילות זדונית בולטת.</span>")
+        
+    return "<br><br>".join(lines)
 
 # ─────────────────────────────────────────────
 #  UI HEADER
@@ -427,10 +450,8 @@ if search_btn or (st.query_params.get("ip")):
                 def format_conflict(m_type, detected, not_detected):
                     if not detected: return None
                     if not not_detected: 
-                        if len(detected) == 1:
-                            return f"<strong>{m_type}</strong><br><span style='font-size:0.95rem; color:#00FF88;'>(מקור: {detected[0]})</span>"
-                        return f"<strong>{m_type}</strong><br><span style='font-size:0.95rem; color:#00FF88;'>(זוהה ע\"י כולם: {', '.join(detected)})</span>"
-                    return f"<strong>{m_type}</strong><br><span style='font-size:0.95rem; color:#FFA500;'>(זוהה: {', '.join(detected)} | לא זוהה: {', '.join(not_detected)})</span>"
+                        return f"<strong style='color:#FF3333; font-size:1.1rem;'>{m_type}</strong>"
+                    return f"<strong style='color:#FF3333; font-size:1.1rem;'>{m_type}</strong><br><span style='font-size:0.95rem; color:#FFA500;'>(זוהה: {', '.join(detected)} | לא זוהה: {', '.join(not_detected)})</span>"
 
                 masking_details = []
                 for m_type, det, not_det in [("VPN", vpn_detected_by, vpn_not_detected_by), 
@@ -507,7 +528,7 @@ if search_btn or (st.query_params.get("ip")):
                         </div>
                         <div class="intel-summary" dir="rtl" style="text-align: right;">
                             <strong>Summary:</strong><br>
-                            {generate_intel_summary(ip, abuse, provider, country, masking)}
+                            {generate_intel_summary(ip, abuse, provider, country, masking, vt_stats, fraud_score, gn, open_ports_count)}
                         </div>
                     """, unsafe_allow_html=True)
 
@@ -533,15 +554,9 @@ if search_btn or (st.query_params.get("ip")):
 
                 with c2:
                     if not IPQS_KEY:
-                        ipqs_display = """
-                            <div style="font-size:1.2rem; font-weight:800; color:#FFA500; margin-top:10px;">API Key Missing</div>
-                            <div style="font-size:0.8rem; color:var(--text-muted); margin-top:5px;">Please add to secrets.toml</div>
-                        """
+                        ipqs_display = "<div style='font-size:1.2rem; font-weight:800; color:#FFA500; margin-top:10px;'>API Key Missing</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Please add to secrets.toml</div>"
                     else:
-                        ipqs_display = f"""
-                            <div style="font-size:2rem; font-weight:800; color:{'#FF3333' if fraud_score > 75 else '#00FF88'}">{fraud_score}</div>
-                            <div style="font-size:0.8rem; color:var(--text-muted); margin-top:5px;">Fraud Probability</div>
-                        """
+                        ipqs_display = f"<div style='font-size:2rem; font-weight:800; color:{'#FF3333' if fraud_score > 75 else '#00FF88'}'>{fraud_score}</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Fraud Probability</div>"
 
                     st.markdown(f"""
                         <div class="card">
