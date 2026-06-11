@@ -583,6 +583,7 @@ if search_btn or (st.query_params.get("ip")):
                                 <a href="https://www.virustotal.com/gui/ip-address/{ip}" target="_blank" style="text-decoration:none; background:rgba(0,119,255,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(0,119,255,0.3);">VirusTotal Report</a>
                                 <a href="https://www.abuseipdb.com/check/{ip}" target="_blank" style="text-decoration:none; background:rgba(255,51,51,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(255,51,51,0.3);">AbuseIPDB Profile</a>
                                 <a href="https://viz.greynoise.io/ip/{ip}" target="_blank" style="text-decoration:none; background:rgba(0,255,136,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(0,255,136,0.3);">GreyNoise Visualizer</a>
+                                <a href="https://www.ipqualityscore.com/free-ip-lookup-proxy-vpn-test/lookup/{ip}" target="_blank" style="text-decoration:none; background:rgba(255,165,0,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(255,165,0,0.3);">IPQualityScore</a>
                             </div>
                         </div>
                     """, unsafe_allow_html=True)
