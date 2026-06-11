@@ -305,7 +305,7 @@ def create_gauge(score):
 def fetch_ipqs(ip):
     if not IPQS_KEY: return None
     try:
-        r = requests.get(f"https://ipqualityscore.com/api/json/ip/{IPQS_KEY}/{ip}?strictness=1", timeout=10)
+        r = requests.get(f"https://ipqualityscore.com/api/json/ip/{IPQS_KEY}/{ip}?strictness=3", timeout=10)
         return r.json()
     except: return None
 
@@ -426,7 +426,10 @@ if search_btn or (st.query_params.get("ip")):
                 # Format for UI
                 def format_conflict(m_type, detected, not_detected):
                     if not detected: return None
-                    if not not_detected: return f"<strong>{m_type}</strong><br><span style='font-size:0.95rem; color:#00FF88;'>(זוהה ע\"י כולם: {', '.join(detected)})</span>"
+                    if not not_detected: 
+                        if len(detected) == 1:
+                            return f"<strong>{m_type}</strong><br><span style='font-size:0.95rem; color:#00FF88;'>(מקור: {detected[0]})</span>"
+                        return f"<strong>{m_type}</strong><br><span style='font-size:0.95rem; color:#00FF88;'>(זוהה ע\"י כולם: {', '.join(detected)})</span>"
                     return f"<strong>{m_type}</strong><br><span style='font-size:0.95rem; color:#FFA500;'>(זוהה: {', '.join(detected)} | לא זוהה: {', '.join(not_detected)})</span>"
 
                 masking_details = []
@@ -445,6 +448,9 @@ if search_btn or (st.query_params.get("ip")):
                 mal_engines = vt_stats.get("malicious", 0)
                 abuse_score = abuse.get("data", {}).get("abuseConfidenceScore", 0)
                 fraud_score = ipqs.get("fraud_score", 0) if ipqs else 0
+                
+                # Overall Threat Score
+                overall_score = max(abuse_score, fraud_score, min(mal_engines * 20, 100))
                 
                 provider = vpn.get("network", {}).get("autonomous_system_organization") or abuse.get("data", {}).get("isp", "Unknown")
                 country = vpn.get("location", {}).get("country", "Unknown")
@@ -482,7 +488,8 @@ if search_btn or (st.query_params.get("ip")):
                             </div>
                         </div>
                     """, unsafe_allow_html=True)
-                    st.plotly_chart(create_gauge(abuse_score), use_container_width=True)
+                    st.markdown("<div style='text-align:center; font-weight:bold; color:var(--text-main); margin-bottom:-20px; font-size:1.1rem;'>Overall Threat Score</div>", unsafe_allow_html=True)
+                    st.plotly_chart(create_gauge(overall_score), use_container_width=True)
 
                 with col_info:
                     st.markdown(f"""
@@ -525,12 +532,22 @@ if search_btn or (st.query_params.get("ip")):
                     """, unsafe_allow_html=True)
 
                 with c2:
+                    if not IPQS_KEY:
+                        ipqs_display = """
+                            <div style="font-size:1.2rem; font-weight:800; color:#FFA500; margin-top:10px;">API Key Missing</div>
+                            <div style="font-size:0.8rem; color:var(--text-muted); margin-top:5px;">Please add to secrets.toml</div>
+                        """
+                    else:
+                        ipqs_display = f"""
+                            <div style="font-size:2rem; font-weight:800; color:{'#FF3333' if fraud_score > 75 else '#00FF88'}">{fraud_score}</div>
+                            <div style="font-size:0.8rem; color:var(--text-muted); margin-top:5px;">Fraud Probability</div>
+                        """
+
                     st.markdown(f"""
                         <div class="card">
                             <div class="card-label">IPQualityScore</div>
                             <div style="text-align:center; padding:1rem 0;">
-                                <div style="font-size:2rem; font-weight:800; color:{'#FF3333' if fraud_score > 75 else '#00FF88'}">{fraud_score}</div>
-                                <div style="font-size:0.8rem; color:var(--text-muted); margin-top:5px;">Fraud Probability</div>
+                                {ipqs_display}
                             </div>
                             <div class="data-row"><span class="data-key">Bot Status</span><span class="data-val">{'Detected' if ipqs and ipqs.get('bot_status') else 'Clear'}</span></div>
                             <div class="data-row"><span class="data-key">Recent Abuse</span><span class="data-val">{'Yes' if ipqs and ipqs.get('recent_abuse') else 'No'}</span></div>
