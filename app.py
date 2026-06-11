@@ -9,10 +9,29 @@ import json
 #  APP CONFIGURATION
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="SOC IP Intelligence",
+    page_title="WE Ankor | SOC IP Intelligence",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="collapsed"
+)
+
+# ─────────────────────────────────────────────
+#  KEEP ALIVE (Prevent Sleep)
+# ─────────────────────────────────────────────
+import streamlit.components.v1 as components
+components.html(
+    """
+    <script>
+        // Keep-alive script to prevent the app from sleeping
+        setInterval(function() {
+            fetch(window.parent.location.href).then(response => {
+                console.log("Keep-alive ping sent");
+            });
+        }, 300000); // 5 minutes
+    </script>
+    """,
+    height=0,
+    width=0,
 )
 
 # ─────────────────────────────────────────────
@@ -336,8 +355,9 @@ st.markdown(f"""
     <div class="site-header">
         <div class="eyebrow">// security operations center //</div>
         <div style="display:flex; align-items:center; justify-content:center; gap:2rem;">
+            <img src="data:image/jpeg;base64,{LOGO_B64}" style="width:100px; border-radius:18px; box-shadow: 0 0 30px rgba(0,229,255,0.2);">
             <div style="text-align:right">
-                <h1>GalK <span>IP</span> Intelligence</h1>
+                <h1>WE Ankor <span>IP</span> Intelligence</h1>
                 <p style="color:#94A3B8; letter-spacing:2px; margin-top:0.5rem; font-size:1.1rem;">
                     מערכת ניתוח איומים בזמן אמת &nbsp;•&nbsp; {now}
                 </p>
@@ -386,7 +406,40 @@ if search_btn or (st.query_params.get("ip")):
 
                 # Data processing
                 sec = vpn.get("security", {})
-                masking = [m for m, k in [("VPN","vpn"),("Proxy","proxy"),("TOR","tor")] if sec.get(k)]
+                
+                # --- MASKING CONFLICT RESOLUTION ---
+                vpn_detected_by, vpn_not_detected_by = [], []
+                proxy_detected_by, proxy_not_detected_by = [], []
+                tor_detected_by, tor_not_detected_by = [], []
+
+                # VPNAPI.io
+                (vpn_detected_by if sec.get("vpn") else vpn_not_detected_by).append("VPNAPI")
+                (proxy_detected_by if sec.get("proxy") else proxy_not_detected_by).append("VPNAPI")
+                (tor_detected_by if sec.get("tor") else tor_not_detected_by).append("VPNAPI")
+
+                # IPQS
+                if ipqs:
+                    (vpn_detected_by if ipqs.get("vpn") else vpn_not_detected_by).append("IPQS")
+                    (proxy_detected_by if ipqs.get("proxy") else proxy_not_detected_by).append("IPQS")
+                    (tor_detected_by if ipqs.get("tor") else tor_not_detected_by).append("IPQS")
+
+                # Format for UI
+                def format_conflict(m_type, detected, not_detected):
+                    if not detected: return None
+                    if not not_detected: return f"{m_type} (זוהה ע\"י כולם: {', '.join(detected)})"
+                    return f"{m_type} <span style='font-size:0.75rem; color:#FFA500;'>(זוהה: {', '.join(detected)} | לא זוהה: {', '.join(not_detected)})</span>"
+
+                masking_details = []
+                for m_type, det, not_det in [("VPN", vpn_detected_by, vpn_not_detected_by), 
+                                             ("Proxy", proxy_detected_by, proxy_not_detected_by), 
+                                             ("TOR", tor_detected_by, tor_not_detected_by)]:
+                    fmt = format_conflict(m_type, det, not_det)
+                    if fmt: masking_details.append(fmt)
+
+                masking_html = "<br>".join(masking_details) if masking_details else "None Detected"
+                
+                # Simple masking array for verdict logic
+                masking = [m for m, det in [("VPN", vpn_detected_by), ("Proxy", proxy_detected_by), ("TOR", tor_detected_by)] if det]
                 
                 vt_stats = vt.get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
                 mal_engines = vt_stats.get("malicious", 0)
@@ -440,7 +493,10 @@ if search_btn or (st.query_params.get("ip")):
                             <div class="data-row"><span class="data-key">Geo Location</span><span class="data-val">{vpn.get('location', {}).get('city', '')}, {country}</span></div>
                             <div class="data-row"><span class="data-key">ASN</span><span class="data-val">AS{vpn.get('network', {}).get('autonomous_system_number', 'N/A')}</span></div>
                             <div class="data-row"><span class="data-key">Connection Type</span><span class="data-val">{abuse.get('data', {}).get('usageType', 'Unknown')}</span></div>
-                            <div class="data-row"><span class="data-key">Masking (VPN/Proxy)</span><span class="data-val" style="color:{'#FF3333' if masking else '#00FF88'}">{' / '.join(masking) if masking else 'None Detected'}</span></div>
+                            <div class="data-row" style="flex-direction: column; align-items: flex-start;">
+                                <span class="data-key" style="margin-bottom: 5px;">Masking (VPN/Proxy)</span>
+                                <span class="data-val" dir="auto" style="font-size:0.85rem; line-height: 1.4; color:{'#FF3333' if masking else '#00FF88'}; width: 100%; text-align: left;">{masking_html}</span>
+                            </div>
                         </div>
                         <div class="intel-summary" dir="rtl" style="text-align: right;">
                             <strong>Summary:</strong><br>
