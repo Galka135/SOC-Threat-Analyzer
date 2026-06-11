@@ -418,16 +418,16 @@ if search_btn or (st.query_params.get("ip")):
                 (tor_detected_by if sec.get("tor") else tor_not_detected_by).append("VPNAPI")
 
                 # IPQS
-                if ipqs:
-                    (vpn_detected_by if ipqs.get("vpn") else vpn_not_detected_by).append("IPQS")
-                    (proxy_detected_by if ipqs.get("proxy") else proxy_not_detected_by).append("IPQS")
+                if ipqs and ipqs.get("success"):
+                    (vpn_detected_by if ipqs.get("vpn") or ipqs.get("active_vpn") else vpn_not_detected_by).append("IPQS")
+                    (proxy_detected_by if ipqs.get("proxy") or ipqs.get("active_tor") else proxy_not_detected_by).append("IPQS")
                     (tor_detected_by if ipqs.get("tor") else tor_not_detected_by).append("IPQS")
 
                 # Format for UI
                 def format_conflict(m_type, detected, not_detected):
                     if not detected: return None
-                    if not not_detected: return f"{m_type} (זוהה ע\"י כולם: {', '.join(detected)})"
-                    return f"{m_type} <span style='font-size:0.75rem; color:#FFA500;'>(זוהה: {', '.join(detected)} | לא זוהה: {', '.join(not_detected)})</span>"
+                    if not not_detected: return f"<strong>{m_type}</strong><br><span style='font-size:0.95rem; color:#00FF88;'>(זוהה ע\"י כולם: {', '.join(detected)})</span>"
+                    return f"<strong>{m_type}</strong><br><span style='font-size:0.95rem; color:#FFA500;'>(זוהה: {', '.join(detected)} | לא זוהה: {', '.join(not_detected)})</span>"
 
                 masking_details = []
                 for m_type, det, not_det in [("VPN", vpn_detected_by, vpn_not_detected_by), 
@@ -436,7 +436,7 @@ if search_btn or (st.query_params.get("ip")):
                     fmt = format_conflict(m_type, det, not_det)
                     if fmt: masking_details.append(fmt)
 
-                masking_html = "<br>".join(masking_details) if masking_details else "None Detected"
+                masking_html = "<br><br>".join(masking_details) if masking_details else "None Detected"
                 
                 # Simple masking array for verdict logic
                 masking = [m for m, det in [("VPN", vpn_detected_by), ("Proxy", proxy_detected_by), ("TOR", tor_detected_by)] if det]
