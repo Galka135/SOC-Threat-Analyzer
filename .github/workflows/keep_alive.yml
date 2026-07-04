@@ -1,0 +1,19 @@
+
+```yaml
+name: Keep Streamlit App Awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 minutes
+  workflow_dispatch:          # allows manual run for testing
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping the app
+        run: |
+          curl -sSL --max-time 60 -o /dev/null -w "Pinged, HTTP status: %{http_code}\n" "$APP_URL"
+        env:
+          APP_URL: https://https://ipvpncheck.streamlit.app/
+```
