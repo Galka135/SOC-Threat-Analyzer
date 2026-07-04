@@ -13,4 +13,4 @@ jobs:
         run: |
           curl -sSL --max-time 60 -o /dev/null -w "Pinged, HTTP status: %{http_code}\n" "$APP_URL"
         env:
-          APP_URL: https://YOUR-APP-NAME.streamlit.app/
+          APP_URL: https://ipvpncheck.streamlit.app/
