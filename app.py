@@ -7,6 +7,8 @@ import plotly.graph_objects as go
 
 # ─────────────────────────────────────────────
 #  APP CONFIGURATION
+#  24/7 uptime is handled by an external ping
+#  (see .github/workflows/keep_alive.yml or UptimeRobot)
 # ─────────────────────────────────────────────
 st.set_page_config(
     page_title="Gal | IP-VPN Intelligence",
@@ -14,28 +16,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
-
-# ─────────────────────────────────────────────
-#  KEEP ALIVE (Prevent Sleep) — st.iframe replaces deprecated components.html
-# ─────────────────────────────────────────────
-KEEPALIVE_HTML = """
-<script>
-    setInterval(function() {
-        try {
-            fetch(window.parent.location.href, {cache: "no-store"});
-        } catch (e) { /* cross-origin — ignore */ }
-    }, 300000); // 5 minutes
-</script>
-"""
-
-def render_keepalive():
-    if hasattr(st, "iframe"):
-        st.iframe(KEEPALIVE_HTML, height=0, width=0)
-    else:
-        import streamlit.components.v1 as components
-        components.html(KEEPALIVE_HTML, height=0, width=0)
-
-render_keepalive()
 
 # ─────────────────────────────────────────────
 #  API KEYS & SECRETS (friendly error instead of KeyError crash)
@@ -253,9 +233,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-#  SAFE DATA ACCESS — the fix for the NoneType crash.
-#  APIs sometimes return {"data": null}; dict.get("data", {}) then
-#  returns None (the key EXISTS), and .get() on None crashes.
+#  SAFE DATA ACCESS — APIs sometimes return {"data": null};
+#  dict.get("data", {}) then returns None and .get() on None crashes.
 # ─────────────────────────────────────────────
 def as_dict(value):
     return value if isinstance(value, dict) else {}
@@ -449,7 +428,6 @@ if search_btn or st.query_params.get("ip"):
                 gn          = results["gn"]
                 censys_resp = results["censys"]
 
-                # Warn (don't crash) when a source came back empty
                 failed = [name.upper() for name, data in results.items() if not data]
                 if failed:
                     st.warning(f"⚠️ מקורות שלא החזירו נתונים (מפתח חסר / תקלה / מגבלת קריאות): {', '.join(failed)}")
@@ -550,7 +528,7 @@ if search_btn or st.query_params.get("ip"):
                         </div>
                     """, unsafe_allow_html=True)
                     st.markdown("<div style='text-align:center; font-weight:bold; color:var(--text-main); margin-bottom:-20px; font-size:1.1rem;'>Overall Threat Score</div>", unsafe_allow_html=True)
-                    st.plotly_chart(create_gauge(overall_score), use_container_width=True)
+                    st.plotly_chart(create_gauge(overall_score), width="stretch")
 
                 with col_info:
                     st.markdown(f"""
@@ -650,6 +628,6 @@ if search_btn or st.query_params.get("ip"):
 # ─────────────────────────────────────────────
 st.markdown("""
     <div style="margin-top: 5rem; padding: 2rem; text-align: center; border-top: 1px solid rgba(255,255,255,0.05); color: #64748B;">
-        Gal IP-VPN Check Service &nbsp;•&nbsp; Enterprise Threat Intelligence Platform &nbsp;•&nbsp; v2.1
+        Gal IP-VPN Check Service &nbsp;•&nbsp; Enterprise Threat Intelligence Platform &nbsp;•&nbsp; v2.2
     </div>
 """, unsafe_allow_html=True)
