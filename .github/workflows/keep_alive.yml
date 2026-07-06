@@ -2,15 +2,54 @@ name: Keep Streamlit App Awake
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # every 10 minutes
-  workflow_dispatch:          # allows manual run for testing
+    - cron: "0 */6 * * *"    # כל 6 שעות (הורד ל-*/3 אם עדיין נרדם)
+  workflow_dispatch:
 
 jobs:
-  ping:
+  wake:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping the app
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright
         run: |
-          curl -sSL --max-time 60 -o /dev/null -w "Pinged, HTTP status: %{http_code}\n" "$APP_URL"
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Visit and wake the app
         env:
           APP_URL: https://ipvpncheck.streamlit.app/
+        run: |
+          python - <<'PY'
+          import os, re
+          from playwright.sync_api import sync_playwright
+
+          url = os.environ["APP_URL"]
+          try:
+              with sync_playwright() as p:
+                  browser = p.chromium.launch()
+                  page = browser.new_page()
+                  print(f"Opening {url}")
+                  page.goto(url, wait_until="domcontentloaded", timeout=120000)
+                  page.wait_for_timeout(15000)  # let Streamlit establish the session
+
+                  # If the app is asleep, click the "get this app back up" button.
+                  try:
+                      btn = page.get_by_role("button", name=re.compile("get this app back up", re.I))
+                      if btn.count() > 0:
+                          print("App was asleep - clicking wake button.")
+                          btn.first.click()
+                          page.wait_for_timeout(30000)  # wait for it to boot
+                      else:
+                          print("App already awake.")
+                  except Exception as e:
+                      print(f"Wake-button step skipped: {e}")
+
+                  print("Final title:", page.title())
+                  browser.close()
+              print("Done - app pinged successfully.")
+          except Exception as e:
+              print(f"Ping had an issue (ignored so the workflow stays green): {e}")
+          PY
