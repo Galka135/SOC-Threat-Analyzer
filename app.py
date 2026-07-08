@@ -345,39 +345,125 @@ def create_gauge(score):
     )
     return fig
 
-def generate_intel_summary(ip, abuse, provider, country, masking, vt_stats, fraud_score, gn, open_ports_count):
-    usage = dget(abuse, 'data', 'usageType', default='')
-    lines = [f"הכתובת <b>{ip}</b> משויכת לתשתית <b>{provider}</b> וממוקמת ב<b>{country}</b>."]
+def generate_intel_summary(ctx):
+    """Cross-correlates ('שחלול') every intelligence source into one consolidated summary.
 
-    if "Data Center" in usage or "Hosting" in usage:
-        lines.append("זוהי כתובת השייכת לחוות שרתים (Data Center) — דפוס נפוץ של בוטים ותוקפים מאורגנים.")
-    elif "ISP" in usage:
-        lines.append("הכתובת משויכת לספק אינטרנט ביתי/מסחרי (ISP).")
-
-    if masking:
-        lines.append(f"<span style='color:#FF3333'>⚠️ הכתובת מזוהה כנקודת הסוואה פעילה ({', '.join(masking)}), מה שמעיד על ניסיון הסתרת זהות.</span>")
-
-    malicious = dget(vt_stats, "malicious", default=0)
-    if malicious > 0:
-        lines.append(f"<span style='color:#FF3333'>🚨 <b>VirusTotal:</b> מנועי אבטחה מדווחים על פעילות זדונית ({malicious} מנועים).</span>")
-
-    if fraud_score > 75:
-        lines.append(f"<span style='color:#FF3333'>🚨 <b>IPQualityScore:</b> סיכוי גבוה להונאה או בוטים (ציון {fraud_score}).</span>")
+    Instead of listing each feed in isolation, this weaves all responses together:
+    it counts how many *active* sources agree the address is risky (the consensus),
+    groups the findings by intelligence dimension, and closes with a single unified
+    conclusion aligned with the final verdict.
+    """
+    ip           = ctx["ip"]
+    provider     = ctx["provider"]
+    country      = ctx["country"]
+    city         = ctx["city"]
+    asn          = ctx["asn"]
+    usage        = ctx["usage_type"] or ""
+    masking      = ctx["masking"]
+    mal_engines  = ctx["mal_engines"]
+    abuse_score  = ctx["abuse_score"]
+    total_reports = ctx["total_reports"]
+    fraud_score  = ctx["fraud_score"]
+    ipqs_ok      = ctx["ipqs_ok"]
+    ipqs         = ctx["ipqs"]
+    gn           = ctx["gn"]
+    open_ports_count = ctx["open_ports_count"]
+    active_sources   = ctx["active_sources"]   # sources that returned data
+    status       = ctx["status"]               # MALICIOUS / SUSPICIOUS / CLEAN
 
     gn_classification = dget(gn, "classification", default="")
-    if dget(gn, "noise", default=False):
+    gn_noise = bool(dget(gn, "noise", default=False))
+    recent_abuse = bool(dget(ipqs, "recent_abuse", default=False)) if ipqs_ok else False
+    bot_status = bool(dget(ipqs, "bot_status", default=False)) if ipqs_ok else False
+
+    # ── Cross-source correlation: which feeds flag this address as risky ──
+    risk_flags = []   # (source, short reason)
+    if mal_engines > 0:
+        risk_flags.append(("VirusTotal", f"{mal_engines} מנועים זדוניים"))
+    if abuse_score > 25:
+        risk_flags.append(("AbuseIPDB", f"ציון אמון {abuse_score}%"))
+    if ipqs_ok and fraud_score > 75:
+        risk_flags.append(("IPQualityScore", f"ציון הונאה {fraud_score}"))
+    if gn_noise and gn_classification == "malicious":
+        risk_flags.append(("GreyNoise", "סורק/איום פעיל"))
+    if masking:
+        risk_flags.append(("Masking", ", ".join(masking)))
+
+    flagged_sources = len(risk_flags)
+
+    # ── 1. Identity ──
+    loc = f"{city}, {country}".strip(", ") or country
+    lines = [f"הכתובת <b>{ip}</b> משויכת לתשתית <b>{provider}</b> (AS{asn}) וממוקמת ב<b>{loc}</b>."]
+    if "Data Center" in usage or "Hosting" in usage:
+        lines[-1] += " זוהי תשתית חוות שרתים (Data Center) — דפוס נפוץ של בוטים ותוקפים מאורגנים."
+    elif "ISP" in usage:
+        lines[-1] += " הכתובת משויכת לספק אינטרנט ביתי/מסחרי (ISP)."
+
+    # ── 2. Consensus line — the actual "שחלול" across all responses ──
+    if flagged_sources == 0:
+        consensus = (f"<span style='color:#00FF88'>🧩 <b>שחלול מקורות:</b> מתוך {active_sources} "
+                     f"מקורות מודיעין פעילים, אף מקור לא סימן את הכתובת כמסוכנת — הצלבה נקייה.</span>")
+    else:
+        sources_txt = " • ".join(f"{s} ({r})" for s, r in risk_flags)
+        color = "#FF3333" if flagged_sources >= 2 else "#FF9900"
+        consensus = (f"<span style='color:{color}'>🧩 <b>שחלול מקורות:</b> מתוך {active_sources} "
+                     f"מקורות מודיעין פעילים, <b>{flagged_sources}</b> מצביעים על סיכון: {sources_txt}.</span>")
+    lines.append(consensus)
+
+    # ── 3. Reputation dimension (VT + AbuseIPDB woven together) ──
+    rep_parts = []
+    if mal_engines > 0:
+        rep_parts.append(f"<b>VirusTotal</b> — {mal_engines} מנועי אבטחה מדווחים על פעילות זדונית")
+    if abuse_score > 0 or total_reports > 0:
+        rep_parts.append(f"<b>AbuseIPDB</b> — ציון אמון {abuse_score}% מבוסס על {total_reports} דיווחים")
+    if rep_parts:
+        both = mal_engines > 0 and abuse_score > 25
+        prefix = "🚨 " if both else "📊 "
+        color = "#FF3333" if both else "#FF9900" if (mal_engines > 0 or abuse_score > 25) else "#94A3B8"
+        joiner = "; ובהצלבה מול " if both else "; "
+        lines.append(f"<span style='color:{color}'>{prefix}<b>מוניטין:</b> " + joiner.join(rep_parts) + ".</span>")
+
+    # ── 4. Fraud & bot behaviour (IPQS) ──
+    if ipqs_ok and (fraud_score > 40 or recent_abuse or bot_status):
+        extra = []
+        if bot_status:
+            extra.append("פעילות בוט")
+        if recent_abuse:
+            extra.append("היסטוריית שימוש-לרעה עדכנית")
+        extra_txt = f" ({', '.join(extra)})" if extra else ""
+        color = "#FF3333" if fraud_score > 75 else "#FF9900"
+        lines.append(f"<span style='color:{color}'>🤖 <b>IPQualityScore:</b> ציון הונאה {fraud_score}{extra_txt}.</span>")
+
+    # ── 5. Anonymization / masking ──
+    if masking:
+        lines.append(f"<span style='color:#FF3333'>⚠️ <b>הסוואת זהות:</b> הכתובת מזוהה כנקודת הסוואה פעילה "
+                     f"({', '.join(masking)}), מה שמעיד על ניסיון הסתרת זהות.</span>")
+
+    # ── 6. Network noise (GreyNoise) ──
+    if gn_noise:
         if gn_classification == "malicious":
             lines.append("<span style='color:#FF3333'>🚨 <b>GreyNoise:</b> זוהה סורק או איום פעיל ברשת שמקורו בכתובת זו.</span>")
         elif gn_classification == "benign":
             lines.append("<span style='color:#00FF88'>✅ <b>GreyNoise:</b> סורק ידוע ובטוח (לדוגמה חברות מחקר).</span>")
+        else:
+            lines.append("<span style='color:#FF9900'>📡 <b>GreyNoise:</b> הכתובת מייצרת רעש רשת (סריקות) ללא סיווג חד-משמעי.</span>")
 
+    # ── 7. Attack surface (Censys) ──
     if open_ports_count > 5:
         lines.append(f"🔍 <b>Censys:</b> לכתובת זו שטח פנים רחב לאינטרנט עם {open_ports_count} פורטים פתוחים.")
     elif open_ports_count > 0:
         lines.append(f"🔍 <b>Censys:</b> נמצאו {open_ports_count} שירותים פתוחים לרשת.")
 
-    if not (malicious > 0 or fraud_score > 75 or masking or gn_classification == "malicious"):
-        lines.append("<span style='color:#00FF88'>✅ הכתובת כרגע מוגדרת כנקייה ואינה מעורבת בפעילות זדונית בולטת.</span>")
+    # ── 8. Consolidated conclusion (aligned with the final verdict) ──
+    if status == "MALICIOUS":
+        lines.append(f"<span style='color:#FF3333'><b>🔴 מסקנה מסכמת:</b> ההצלבה בין {flagged_sources} מקורות "
+                     f"מבססת רמת ודאות גבוהה לאיום — מומלצת חסימה מיידית.</span>")
+    elif status == "SUSPICIOUS":
+        lines.append("<span style='color:#FF9900'><b>🟠 מסקנה מסכמת:</b> קיימים אינדיקטורים חלקיים בין המקורות. "
+                     "מומלצת בחינה מעמיקה והצלבה ידנית לפני קבלת החלטה.</span>")
+    else:
+        lines.append("<span style='color:#00FF88'><b>🟢 מסקנה מסכמת:</b> הצלבת כלל המקורות אינה מציגה אינדיקטורים "
+                     "לפעילות זדונית — הכתובת מוגדרת כנקייה.</span>")
 
     return "<br><br>".join(lines)
 
@@ -429,6 +515,7 @@ if search_btn or st.query_params.get("ip"):
                 censys_resp = results["censys"]
 
                 failed = [name.upper() for name, data in results.items() if not data]
+                active_sources = sum(1 for data in results.values() if data)
                 if failed:
                     st.warning(f"⚠️ מקורות שלא החזירו נתונים (מפתח חסר / תקלה / מגבלת קריאות): {', '.join(failed)}")
 
@@ -546,7 +633,15 @@ if search_btn or st.query_params.get("ip"):
                         </div>
                         <div class="intel-summary" dir="rtl" style="text-align: right;">
                             <strong>Summary:</strong><br>
-                            {generate_intel_summary(ip, abuse, provider, country, masking, vt_stats, fraud_score, gn, open_ports_count)}
+                            {generate_intel_summary({
+                                "ip": ip, "provider": provider, "country": country, "city": city,
+                                "asn": asn, "usage_type": usage_type, "masking": masking,
+                                "mal_engines": mal_engines, "abuse_score": abuse_score,
+                                "total_reports": total_reports, "fraud_score": fraud_score,
+                                "ipqs_ok": ipqs_ok, "ipqs": ipqs, "gn": gn,
+                                "open_ports_count": open_ports_count,
+                                "active_sources": active_sources, "status": status,
+                            })}
                         </div>
                     """, unsafe_allow_html=True)
 
