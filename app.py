@@ -26,6 +26,10 @@ VPNAPI_KEY      = st.secrets.get("VPNAPI_KEY", "")
 IPQS_KEY        = st.secrets.get("IPQS_KEY", "")
 GREYNOISE_KEY   = st.secrets.get("GREYNOISE_KEY", "")
 CENSYS_PAT      = st.secrets.get("CENSYS_PAT", "")
+# ── Additional free intelligence sources (optional keys) ──
+OTX_API_KEY     = st.secrets.get("OTX_API_KEY", "")      # AlienVault OTX — free key: https://otx.alienvault.com  (Settings → API Integration)
+PROXYCHECK_KEY  = st.secrets.get("PROXYCHECK_KEY", "")   # ProxyCheck.io — free key: https://proxycheck.io/dashboard
+# Shodan InternetDB (https://internetdb.shodan.io) needs NO key — always on.
 
 MISSING_KEYS = [name for name, val in [
     ("VT_API_KEY", VT_API_KEY),
@@ -291,12 +295,31 @@ def fetch_censys(ip):
     return fetch_json(f"https://search.censys.io/api/v2/hosts/{ip}",
                       headers={"Authorization": f"Bearer {CENSYS_PAT}"})
 
+def fetch_shodan_idb(ip):
+    """Shodan InternetDB — free, no API key. Returns open ports, CVEs, tags, hostnames."""
+    return fetch_json(f"https://internetdb.shodan.io/{ip}")
+
+def fetch_otx(ip):
+    """AlienVault OTX — community threat pulses. Free API key required."""
+    if not OTX_API_KEY:
+        return {}
+    return fetch_json(f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
+                      headers={"X-OTX-API-KEY": OTX_API_KEY})
+
+def fetch_proxycheck(ip):
+    """ProxyCheck.io — independent VPN/Proxy/TOR + risk score. Free API key (works keyless at low quota)."""
+    params = {"vpn": 1, "risk": 1}
+    if PROXYCHECK_KEY:
+        params["key"] = PROXYCHECK_KEY
+    return fetch_json(f"https://proxycheck.io/v2/{ip}", params=params)
+
 @st.cache_data(ttl=600, show_spinner=False)
 def run_full_scan(ip):
-    """Fetch all 6 sources in parallel. Cached 10 min per IP."""
+    """Fetch all sources in parallel. Cached 10 min per IP."""
     tasks = {
         "vt": fetch_vt, "abuse": fetch_abuse, "vpn": fetch_vpnapi,
         "ipqs": fetch_ipqs, "gn": fetch_greynoise, "censys": fetch_censys,
+        "shodan": fetch_shodan_idb, "otx": fetch_otx, "proxycheck": fetch_proxycheck,
     }
     results = {}
     with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
@@ -368,6 +391,12 @@ def generate_intel_summary(ctx):
     ipqs         = ctx["ipqs"]
     gn           = ctx["gn"]
     open_ports_count = ctx["open_ports_count"]
+    otx_pulse_count  = ctx["otx_pulse_count"]
+    otx_pulse_names  = ctx["otx_pulse_names"]
+    pc_ok        = ctx["pc_ok"]
+    pc_risk      = ctx["pc_risk"]
+    shodan_vulns = ctx["shodan_vulns"]
+    shodan_tags  = ctx["shodan_tags"]
     active_sources   = ctx["active_sources"]   # sources that returned data
     status       = ctx["status"]               # MALICIOUS / SUSPICIOUS / CLEAN
 
@@ -386,6 +415,12 @@ def generate_intel_summary(ctx):
         risk_flags.append(("IPQualityScore", f"ציון הונאה {fraud_score}"))
     if gn_noise and gn_classification == "malicious":
         risk_flags.append(("GreyNoise", "סורק/איום פעיל"))
+    if otx_pulse_count > 0:
+        risk_flags.append(("AlienVault OTX", f"{otx_pulse_count} דיווחי איום"))
+    if pc_ok and pc_risk >= 66:
+        risk_flags.append(("ProxyCheck", f"סיכון {pc_risk}"))
+    if shodan_vulns:
+        risk_flags.append(("Shodan", f"{len(shodan_vulns)} חולשות ידועות"))
     if masking:
         risk_flags.append(("Masking", ", ".join(masking)))
 
@@ -448,13 +483,27 @@ def generate_intel_summary(ctx):
         else:
             lines.append("<span style='color:#FF9900'>📡 <b>GreyNoise:</b> הכתובת מייצרת רעש רשת (סריקות) ללא סיווג חד-משמעי.</span>")
 
-    # ── 7. Attack surface (Censys) ──
+    # ── 7. Community threat pulses (AlienVault OTX) ──
+    if otx_pulse_count > 0:
+        names_txt = f" (לדוגמה: {', '.join(otx_pulse_names)})" if otx_pulse_names else ""
+        color = "#FF3333" if otx_pulse_count > 3 else "#FF9900"
+        lines.append(f"<span style='color:{color}'>🌐 <b>AlienVault OTX:</b> הכתובת מופיעה ב-{otx_pulse_count} "
+                     f"דיווחי איום קהילתיים (Pulses){names_txt}.</span>")
+
+    # ── 8. Attack surface & known vulnerabilities (Censys + Shodan) ──
     if open_ports_count > 5:
         lines.append(f"🔍 <b>Censys:</b> לכתובת זו שטח פנים רחב לאינטרנט עם {open_ports_count} פורטים פתוחים.")
     elif open_ports_count > 0:
         lines.append(f"🔍 <b>Censys:</b> נמצאו {open_ports_count} שירותים פתוחים לרשת.")
 
-    # ── 8. Consolidated conclusion (aligned with the final verdict) ──
+    if shodan_vulns:
+        preview = ", ".join(shodan_vulns[:4]) + ("…" if len(shodan_vulns) > 4 else "")
+        lines.append(f"<span style='color:#FF3333'>🛠️ <b>Shodan:</b> זוהו {len(shodan_vulns)} חולשות ידועות (CVE) "
+                     f"בשירותים החשופים: {preview}.</span>")
+    elif shodan_tags:
+        lines.append(f"🏷️ <b>Shodan:</b> תיוגי תשתית: {', '.join(shodan_tags[:5])}.")
+
+    # ── 9. Consolidated conclusion (aligned with the final verdict) ──
     if status == "MALICIOUS":
         lines.append(f"<span style='color:#FF3333'><b>🔴 מסקנה מסכמת:</b> ההצלבה בין {flagged_sources} מקורות "
                      f"מבססת רמת ודאות גבוהה לאיום — מומלצת חסימה מיידית.</span>")
@@ -513,11 +562,38 @@ if search_btn or st.query_params.get("ip"):
                 ipqs        = results["ipqs"]
                 gn          = results["gn"]
                 censys_resp = results["censys"]
+                shodan_idb  = results["shodan"]
+                otx         = results["otx"]
+                proxycheck  = results["proxycheck"]
 
                 failed = [name.upper() for name, data in results.items() if not data]
                 active_sources = sum(1 for data in results.values() if data)
                 if failed:
                     st.warning(f"⚠️ מקורות שלא החזירו נתונים (מפתח חסר / תקלה / מגבלת קריאות): {', '.join(failed)}")
+
+                # Shodan InternetDB — free, keyless: open ports + known CVEs + tags
+                shodan_ports = dget(shodan_idb, "ports", default=[])
+                shodan_ports = shodan_ports if isinstance(shodan_ports, list) else []
+                shodan_vulns = dget(shodan_idb, "vulns", default=[])
+                shodan_vulns = shodan_vulns if isinstance(shodan_vulns, list) else []
+                shodan_tags  = dget(shodan_idb, "tags", default=[])
+                shodan_tags  = shodan_tags if isinstance(shodan_tags, list) else []
+
+                # AlienVault OTX — number of threat pulses referencing this IP
+                otx_pulse_count = dget(otx, "pulse_info", "count", default=0) or 0
+                otx_pulses = dget(otx, "pulse_info", "pulses", default=[])
+                otx_pulses = otx_pulses if isinstance(otx_pulses, list) else []
+                otx_pulse_names = [dget(p, "name", default="") for p in otx_pulses[:3] if dget(p, "name", default="")]
+
+                # ProxyCheck.io — independent masking + risk (node keyed by the IP itself)
+                pc_ok   = dget(proxycheck, "status", default="") == "ok"
+                pc_node = as_dict(dget(proxycheck, ip, default={}))
+                pc_is_proxy = str(pc_node.get("proxy", "")).lower() == "yes"
+                pc_type = str(pc_node.get("type", "")).upper()
+                try:
+                    pc_risk = int(pc_node.get("risk", 0) or 0)
+                except (ValueError, TypeError):
+                    pc_risk = 0
 
                 # Censys Data Processing
                 services = dget(censys_resp, "result", "services", default=[])
@@ -546,6 +622,13 @@ if search_btn or st.query_params.get("ip"):
                     (proxy_detected_by if ipqs.get("proxy") or ipqs.get("active_tor") else proxy_not_detected_by).append("IPQS")
                     (tor_detected_by if ipqs.get("tor") else tor_not_detected_by).append("IPQS")
 
+                # ProxyCheck.io — third independent opinion on masking
+                if pc_ok:
+                    (vpn_detected_by if pc_is_proxy and pc_type == "VPN" else vpn_not_detected_by).append("ProxyCheck")
+                    (tor_detected_by if pc_type == "TOR" else tor_not_detected_by).append("ProxyCheck")
+                    # Any proxy flag that isn't specifically VPN/TOR counts as a generic proxy
+                    (proxy_detected_by if pc_is_proxy and pc_type not in ("VPN", "TOR") else proxy_not_detected_by).append("ProxyCheck")
+
                 def format_conflict(m_type, detected, not_detected):
                     if not detected:
                         return None
@@ -572,7 +655,10 @@ if search_btn or st.query_params.get("ip"):
                 fraud_score = dget(ipqs, "fraud_score", default=0) if ipqs_ok else 0
                 fraud_val_ui = fraud_score if ipqs_ok else "ERR"
 
-                overall_score = max(abuse_score, fraud_score, min(mal_engines * 20, 100))
+                overall_score = max(abuse_score, fraud_score, pc_risk,
+                                    min(mal_engines * 20, 100),
+                                    min(otx_pulse_count * 20, 100),
+                                    min(len(shodan_vulns) * 15, 100))
 
                 provider = (dget(vpn, "network", "autonomous_system_organization")
                             or dget(abuse, "data", "isp", default="Unknown"))
@@ -582,9 +668,9 @@ if search_btn or st.query_params.get("ip"):
                 usage_type = dget(abuse, "data", "usageType", default="Unknown")
 
                 # Verdict logic
-                if mal_engines > 2 or abuse_score > 80 or fraud_score > 80:
+                if mal_engines > 2 or abuse_score > 80 or fraud_score > 80 or otx_pulse_count > 3 or pc_risk >= 66:
                     status, label, color_class = "MALICIOUS", "איום מזוהה - חסימה מומלצת", "danger"
-                elif mal_engines > 0 or abuse_score > 25 or masking:
+                elif mal_engines > 0 or abuse_score > 25 or masking or otx_pulse_count > 0 or shodan_vulns:
                     status, label, color_class = "SUSPICIOUS", "חשוד - נדרשת בחינה מעמיקה", "warning"
                 else:
                     status, label, color_class = "CLEAN", "כתובת נקייה - לא נמצאו אינדיקטורים", "safe"
@@ -640,6 +726,9 @@ if search_btn or st.query_params.get("ip"):
                                 "total_reports": total_reports, "fraud_score": fraud_score,
                                 "ipqs_ok": ipqs_ok, "ipqs": ipqs, "gn": gn,
                                 "open_ports_count": open_ports_count,
+                                "otx_pulse_count": otx_pulse_count, "otx_pulse_names": otx_pulse_names,
+                                "pc_ok": pc_ok, "pc_risk": pc_risk,
+                                "shodan_vulns": shodan_vulns, "shodan_tags": shodan_tags,
                                 "active_sources": active_sources, "status": status,
                             })}
                         </div>
@@ -715,6 +804,79 @@ if search_btn or st.query_params.get("ip"):
                         </div>
                     """, unsafe_allow_html=True)
 
+                # ─── SECOND ROW: newly added free feeds ───
+                d1, d2, d3, d4 = st.columns(4)
+
+                with d1:
+                    if not OTX_API_KEY:
+                        otx_display = "<div style='font-size:1.2rem; font-weight:800; color:#FFA500; margin-top:10px;'>API Key Missing</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Add OTX_API_KEY to secrets</div>"
+                    else:
+                        otx_color = "#FF3333" if otx_pulse_count > 3 else "#FF9900" if otx_pulse_count > 0 else "#00FF88"
+                        otx_display = f"<div style='font-size:2rem; font-weight:800; color:{otx_color}'>{otx_pulse_count}</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Threat Pulses</div>"
+                    otx_top = otx_pulse_names[0] if otx_pulse_names else "—"
+                    st.markdown(f"""
+                        <div class="card">
+                            <div class="card-label">AlienVault OTX</div>
+                            <div style="text-align:center; padding:1rem 0;">
+                                {otx_display}
+                            </div>
+                            <div class="data-row" style="flex-direction: column; align-items: flex-start; border-bottom:none;">
+                                <span class="data-key" style="margin-bottom: 5px;">Latest Pulse</span>
+                                <span class="data-val" dir="auto" style="font-size:0.8rem; line-height:1.4; text-align:left; width:100%;">{otx_top}</span>
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+
+                with d2:
+                    if not pc_ok:
+                        pc_display = "<div style='font-size:1.2rem; font-weight:800; color:#FFA500; margin-top:10px;'>No Data</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Add PROXYCHECK_KEY for full quota</div>"
+                    else:
+                        pc_color = "#FF3333" if pc_risk >= 66 else "#FF9900" if pc_risk >= 34 else "#00FF88"
+                        pc_display = f"<div style='font-size:2rem; font-weight:800; color:{pc_color}'>{pc_risk}</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Risk Score</div>"
+                    st.markdown(f"""
+                        <div class="card">
+                            <div class="card-label">ProxyCheck.io</div>
+                            <div style="text-align:center; padding:1rem 0;">
+                                {pc_display}
+                            </div>
+                            <div class="data-row"><span class="data-key">Proxy / VPN</span><span class="data-val">{'Yes' if pc_is_proxy else 'No'}</span></div>
+                            <div class="data-row"><span class="data-key">Type</span><span class="data-val">{pc_type or '—'}</span></div>
+                        </div>
+                    """, unsafe_allow_html=True)
+
+                with d3:
+                    vuln_color = "#FF3333" if shodan_vulns else "#00FF88"
+                    vuln_preview = ", ".join(shodan_vulns[:6]) if shodan_vulns else ("Tags: " + ", ".join(shodan_tags[:4]) if shodan_tags else "No known CVEs")
+                    st.markdown(f"""
+                        <div class="card">
+                            <div class="card-label">Shodan InternetDB</div>
+                            <div style="text-align:center; padding:1rem 0;">
+                                <div style="font-size:2rem; font-weight:800; color:{vuln_color}">{len(shodan_vulns)}</div>
+                                <div style="font-size:0.8rem; color:var(--text-muted); margin-top:5px;">Known CVEs</div>
+                            </div>
+                            <div class="data-row"><span class="data-key">Open Ports</span><span class="data-val">{len(shodan_ports)}</span></div>
+                            <div class="data-row" style="flex-direction: column; align-items: flex-start; border-bottom:none;">
+                                <span class="data-key" style="margin-bottom: 5px;">Details</span>
+                                <div style="max-height: 70px; overflow-y: auto; width: 100%;">
+                                    <span class="data-val" style="font-size:0.8rem; line-height:1.4;">{vuln_preview}</span>
+                                </div>
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+
+                with d4:
+                    st.markdown(f"""
+                        <div class="card">
+                            <div class="card-label">More Pivots</div>
+                            <div style="display:grid; grid-template-columns:1fr; gap:0.8rem;">
+                                <a href="https://otx.alienvault.com/indicator/ip/{ip}" target="_blank" style="text-decoration:none; background:rgba(0,229,255,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(0,229,255,0.3);">AlienVault OTX</a>
+                                <a href="https://proxycheck.io/threats/{ip}" target="_blank" style="text-decoration:none; background:rgba(255,153,0,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(255,153,0,0.3);">ProxyCheck Threats</a>
+                                <a href="https://www.shodan.io/host/{ip}" target="_blank" style="text-decoration:none; background:rgba(0,119,255,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(0,119,255,0.3);">Shodan Host</a>
+                                <a href="https://search.censys.io/hosts/{ip}" target="_blank" style="text-decoration:none; background:rgba(0,255,136,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(0,255,136,0.3);">Censys Host</a>
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+
             except Exception as e:
                 st.error(f"Error during scan: {type(e).__name__}: {e}")
 
@@ -723,6 +885,6 @@ if search_btn or st.query_params.get("ip"):
 # ─────────────────────────────────────────────
 st.markdown("""
     <div style="margin-top: 5rem; padding: 2rem; text-align: center; border-top: 1px solid rgba(255,255,255,0.05); color: #64748B;">
-        Gal IP-VPN Check Service &nbsp;•&nbsp; Enterprise Threat Intelligence Platform &nbsp;•&nbsp; v2.2
+        Gal IP-VPN Check Service &nbsp;•&nbsp; Enterprise Threat Intelligence Platform &nbsp;•&nbsp; v2.3
     </div>
 """, unsafe_allow_html=True)
