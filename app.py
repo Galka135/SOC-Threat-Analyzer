@@ -122,11 +122,11 @@ st.markdown("""
     .card {
         background: var(--bg-card);
         border: 1px solid rgba(148, 163, 184, 0.1);
-        border-radius: 20px;
-        padding: 2rem;
+        border-radius: 16px;
+        padding: 1.4rem 1.5rem;
         backdrop-filter: blur(20px);
-        margin-bottom: 1.5rem;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+        margin-bottom: 1rem;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
         position: relative;
         overflow: hidden;
     }
@@ -229,10 +229,50 @@ st.markdown("""
         border-right: 4px solid var(--accent-cyan);
         padding: 1.5rem;
         border-radius: 0 12px 12px 0;
-        font-size: 1.1rem;
+        font-size: 1.05rem;
         line-height: 1.6;
         color: #CBD5E1;
     }
+
+    /* ── SOC source-consensus strip: every source's status at a glance ── */
+    .strip-label {
+        text-align: center;
+        font-family: 'Inter', sans-serif !important;
+        font-size: 0.7rem;
+        letter-spacing: 3px;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        margin: 0.5rem 0 0.6rem;
+    }
+    .src-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: center;
+        margin-bottom: 1.5rem;
+    }
+    .src-chip {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        background: rgba(15, 23, 42, 0.7);
+        border: 1px solid rgba(148, 163, 184, 0.15);
+        border-radius: 10px;
+        padding: 6px 12px;
+        font-family: 'Inter', sans-serif !important;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--text-main);
+        white-space: nowrap;
+    }
+    .src-chip .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .src-chip .src-val { color: var(--text-muted); font-weight: 700; }
+    .chip-flag { border-color: rgba(255, 51, 51, 0.45); background: rgba(255, 51, 51, 0.06); }
+    .chip-clean { border-color: rgba(0, 255, 136, 0.25); }
+    .chip-none { opacity: 0.4; }
+
+    /* Analyst copy-line: st.code block used as a ticket-ready one-liner */
+    [data-testid="stCode"] { direction: ltr; text-align: left; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -516,6 +556,24 @@ def generate_intel_summary(ctx):
 
     return "<br><br>".join(lines)
 
+def src_state(responded, flagged):
+    """Map a source's outcome to a chip state for the consensus strip."""
+    if not responded:
+        return "none"
+    return "flag" if flagged else "clean"
+
+def build_source_strip(sources):
+    """Render the SOC source-consensus strip. `sources` = list of (name, state, value)."""
+    dot_color = {"flag": "#FF3333", "clean": "#00FF88", "none": "#64748B"}
+    chips = []
+    for name, state, val in sources:
+        val_html = f"<span class='src-val'>{val}</span>" if val not in ("", None) else ""
+        chips.append(
+            f"<div class='src-chip chip-{state}'>"
+            f"<span class='dot' style='background:{dot_color[state]}'></span>{name}{val_html}</div>"
+        )
+    return "<div class='strip-label'>// source consensus //</div><div class='src-strip'>" + "".join(chips) + "</div>"
+
 # ─────────────────────────────────────────────
 #  UI HEADER
 # ─────────────────────────────────────────────
@@ -675,6 +733,33 @@ if search_btn or st.query_params.get("ip"):
                 else:
                     status, label, color_class = "CLEAN", "כתובת נקייה - לא נמצאו אינדיקטורים", "safe"
 
+                # ─── SOC SOURCE-CONSENSUS STRIP (every source at a glance) ───
+                gn_class = dget(gn, "classification", default="")
+                gn_short = gn_class if gn_class else ("noise" if dget(gn, "noise", default=False) else "")
+                vpnapi_flag = bool(sec.get("vpn") or sec.get("proxy") or sec.get("tor"))
+                source_rows = [
+                    ("VirusTotal", src_state(bool(vt), mal_engines > 0), mal_engines),
+                    ("AbuseIPDB", src_state(bool(abuse), abuse_score > 25), f"{abuse_score}%"),
+                    ("IPQS", src_state(ipqs_ok, fraud_score > 75), fraud_score if ipqs_ok else "—"),
+                    ("GreyNoise", src_state(bool(gn), gn_class == "malicious"), gn_short),
+                    ("VPNAPI", src_state(bool(vpn), vpnapi_flag), "VPN" if vpnapi_flag else ""),
+                    ("Censys", src_state(bool(censys_resp), open_ports_count > 5), open_ports_count),
+                    ("Shodan", src_state(bool(shodan_idb), len(shodan_vulns) > 0), f"{len(shodan_vulns)} CVE"),
+                    ("OTX", src_state(bool(otx), otx_pulse_count > 0), otx_pulse_count),
+                    ("ProxyCheck", src_state(pc_ok, pc_risk >= 66), pc_risk if pc_ok else "—"),
+                ]
+                st.markdown(build_source_strip(source_rows), unsafe_allow_html=True)
+
+                # ─── ANALYST COPY-LINE (ticket-ready IOC one-liner, has built-in copy button) ───
+                ticket_line = (
+                    f"[{status}] {ip} | score {overall_score} | "
+                    f"VT:{mal_engines} Abuse:{abuse_score} IPQS:{fraud_score} "
+                    f"OTX:{otx_pulse_count} PC:{pc_risk} CVE:{len(shodan_vulns)} | "
+                    f"mask:{'/'.join(masking) if masking else 'none'} | "
+                    f"{provider} ({country}) | {now}"
+                )
+                st.code(ticket_line, language=None)
+
                 # ─── UI LAYOUT ───
                 col_verdict, col_info = st.columns([1.2, 2])
 
@@ -829,7 +914,7 @@ if search_btn or st.query_params.get("ip"):
 
                 with d2:
                     if not pc_ok:
-                        pc_display = "<div style='font-size:1.2rem; font-weight:800; color:#FFA500; margin-top:10px;'>No Data</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Add PROXYCHECK_KEY for full quota</div>"
+                        pc_display = "<div style='font-size:1.2rem; font-weight:800; color:#FFA500; margin-top:10px;'>No Data</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Keyless — rate-limited or private IP</div>"
                     else:
                         pc_color = "#FF3333" if pc_risk >= 66 else "#FF9900" if pc_risk >= 34 else "#00FF88"
                         pc_display = f"<div style='font-size:2rem; font-weight:800; color:{pc_color}'>{pc_risk}</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Risk Score</div>"
