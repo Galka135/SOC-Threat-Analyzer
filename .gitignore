@@ -1,2 +1,12 @@
+# Python bytecode
 __pycache__/
 *.pyc
+
+# Secrets — never commit API keys / tokens
+.streamlit/secrets.toml
+secrets.toml
+.env
+.env.*
+*.key
+*.pem
+credentials.json
