@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import streamlit as st
 
 from analyzer import compute_verdict, extract_exposure, extract_infrastructure, run_scan
-from analyzer.sources import SOURCE_CHECKS
+from analyzer.sources import OPTIONAL_KEY, SOURCE_CHECKS
 
 # ─────────────────────────────────────────────────────────────
 #  PAGE CONFIG
@@ -31,7 +31,7 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────
 SECRET_NAMES = ["VT_API_KEY", "ABUSE_API_KEY", "IPQS_KEY", "GREYNOISE_KEY",
                 "VPNAPI_KEY", "PROXYCHECK_KEY", "OTX_API_KEY", "CENSYS_PAT",
-                "IPINFO_TOKEN"]
+                "IPINFO_TOKEN", "CRIMINALIP_KEY", "THREATFOX_AUTH_KEY"]
 
 
 def _secret(*names):
@@ -52,6 +52,10 @@ def _secret(*names):
 SECRET_ALIASES = {
     "IPINFO_TOKEN": ["IPINFO_TOKEN", "IPINFO_API_KEY", "IPINFO_KEY",
                      "IPINFO_ACCESS_TOKEN", "IPINFO"],
+    "CRIMINALIP_KEY": ["CRIMINALIP_KEY", "CRIMINALIP_API_KEY", "CRIMINAL_IP_KEY",
+                       "CRIMINALIP_TOKEN", "CRIMINALIP"],
+    "THREATFOX_AUTH_KEY": ["THREATFOX_AUTH_KEY", "THREATFOX_KEY",
+                           "THREATFOX_API_KEY", "ABUSECH_AUTH_KEY"],
 }
 
 KEYS = {name: _secret(*SECRET_ALIASES.get(name, [name])) for name in SECRET_NAMES}
@@ -495,6 +499,8 @@ with st.sidebar:
             st.markdown(f"🟢 **{name}** — ללא מפתח (חינמי)")
         elif KEYS.get(secret):
             st.markdown(f"🟢 **{name}** — מפתח מוגדר")
+        elif key in OPTIONAL_KEY:
+            st.markdown(f"🟢 **{name}** — חינמי (מפתח `{secret}` אופציונלי)")
         else:
             st.markdown(f"⚪ **{name}** — חסר `{secret}`")
     st.divider()
@@ -519,7 +525,8 @@ with st.sidebar:
 #  HEADER
 # ─────────────────────────────────────────────────────────────
 now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-enabled_count = sum(1 for _, _, _, s in SOURCE_CHECKS if s is None or KEYS.get(s))
+enabled_count = sum(1 for k, _, _, s in SOURCE_CHECKS
+                    if s is None or KEYS.get(s) or k in OPTIONAL_KEY)
 
 st.markdown(f"""<div class="app-header">
 <div class="brand">
@@ -617,8 +624,9 @@ else:
 <div style="font-size:2.6rem; margin-bottom:0.8rem">🛰️</div>
 <div style="font-size:1.05rem; color:var(--ink-2); font-weight:600">הזן כתובת IP כדי להתחיל תחקור</div>
 <div style="font-size:0.85rem; margin-top:0.5rem">
-המערכת מצליבה במקביל עד 11 מקורות מודיעין — VirusTotal, AbuseIPDB, IPQS, GreyNoise,
-VPNAPI, ProxyCheck, OTX, Shodan, Censys, IPinfo, IP-API — ומחשבת Verdict משוקלל אחד.
+המערכת מצליבה במקביל עד 13 מקורות מודיעין — VirusTotal, AbuseIPDB, IPQS, GreyNoise,
+VPNAPI, ProxyCheck, OTX, ThreatFox, CriminalIP, Shodan, Censys, IPinfo, IP-API —
+ומחשבת Verdict משוקלל אחד.
 </div></div>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────

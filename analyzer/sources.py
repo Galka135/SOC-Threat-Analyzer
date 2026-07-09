@@ -54,6 +54,16 @@ def _get(url, headers=None, params=None, auth=None):
     return r.status_code, (data if isinstance(data, dict) else {})
 
 
+def _post(url, json_body, headers=None):
+    """POST JSON → (status_code, dict). Raises on network errors only."""
+    r = requests.post(url, json=json_body, headers=headers, timeout=REQUEST_TIMEOUT)
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    return r.status_code, (data if isinstance(data, dict) else {})
+
+
 def _dget(data, *keys, default=None):
     cur = data
     for key in keys:
@@ -450,6 +460,109 @@ def check_ipapi(ip, _api_key=None):
     return rep
 
 
+def check_threatfox(ip, auth_key):
+    """ThreatFox (abuse.ch) — is the IP a known malware / botnet-C2 IOC.
+    Works keyless where allowed; abuse.ch may require a free Auth-Key."""
+    rep = SourceReport("threatfox", "ThreatFox", weight=1.4,
+                       link=f"https://threatfox.abuse.ch/browse.php?search=ioc%3A{ip}")
+    headers = {"Accept": "application/json"}
+    if auth_key:
+        headers["Auth-Key"] = auth_key
+    status, data = _post("https://threatfox-api.abuse.ch/api/v1/",
+                         {"query": "search_ioc", "search_term": ip}, headers=headers)
+    qs = str(data.get("query_status", ""))
+
+    if qs == "no_result":
+        rep.ok = True
+        rep.risk = 2.0
+        rep.metrics = {"IOCs פעילים": 0}
+        rep.findings.append("לא מופיעה כ-IOC פעיל של malware/botnet")
+        return rep
+    if status in (401, 403) or qs in ("unauthorized", "unauthenticated"):
+        rep.error = "נדרש Auth-Key חינמי (רישום ב-abuse.ch → THREATFOX_AUTH_KEY)"
+        return rep
+    if status != 200 or qs != "ok":
+        rep.error = qs or f"HTTP {status}"
+        return rep
+
+    iocs = data.get("data") if isinstance(data.get("data"), list) else []
+    malwares, threat_types, confidences = [], set(), []
+    for ioc in iocs:
+        if not isinstance(ioc, dict):
+            continue
+        name = ioc.get("malware_printable") or ioc.get("malware") or ""
+        if name:
+            malwares.append(name)
+        if ioc.get("threat_type"):
+            threat_types.add(ioc["threat_type"])
+        try:
+            confidences.append(int(ioc.get("confidence_level", 0) or 0))
+        except (ValueError, TypeError):
+            pass
+
+    rep.ok = True
+    # any live malware/C2 IOC is a strong signal; confidence lifts it further
+    rep.risk = float(min(100, max(70, max(confidences) if confidences else 70))) if iocs else 2.0
+    top_malware = sorted(set(malwares))[:3]
+    rep.metrics = {"IOCs פעילים": len(iocs),
+                   "סוגי איום": ", ".join(sorted(threat_types)) if threat_types else "—"}
+    if iocs:
+        mw = f" — {', '.join(top_malware)}" if top_malware else ""
+        rep.findings.append(f"מופיעה ב-{len(iocs)} IOCs פעילים של malware/C2{mw}")
+        if "botnet_cc" in threat_types:
+            rep.findings.append("משויכת לתשתית שליטה-ובקרה (C2) של botnet")
+    return rep
+
+
+CRIMINALIP_SCORE = {"safe": 3, "low": 12, "moderate": 45, "dangerous": 78, "critical": 95}
+
+
+def check_criminalip(ip, api_key):
+    """CriminalIP — independent inbound/outbound risk score + masking flags."""
+    rep = SourceReport("criminalip", "CriminalIP", weight=1.3,
+                       link=f"https://www.criminalip.io/asset/report/{ip}")
+    if not api_key:
+        rep.enabled = False
+        rep.error = "אין מפתח API"
+        return rep
+    status, data = _get("https://api.criminalip.io/v1/feature/ip/suspicious-info",
+                        headers={"x-api-key": api_key}, params={"ip": ip})
+    body_status = data.get("status")
+    if status != 200 or (body_status not in (200, None)):
+        rep.error = _dget(data, "message", default=f"HTTP {status}")
+        return rep
+
+    issues = _dget(data, "issues", default={}) or {}
+    score = _dget(data, "score", default={}) or {}
+    inbound = str(score.get("inbound", "")).lower()
+    outbound = str(score.get("outbound", "")).lower()
+    risk = max(CRIMINALIP_SCORE.get(inbound, 0), CRIMINALIP_SCORE.get(outbound, 0))
+
+    rep.ok = True
+    rep.vpn = bool(issues.get("is_vpn") or issues.get("is_anonymous_vpn"))
+    rep.proxy = bool(issues.get("is_proxy"))
+    rep.tor = bool(issues.get("is_tor"))
+    rep.hosting = bool(issues.get("is_hosting") or issues.get("is_cloud")) or None
+    if issues.get("is_scanner") or issues.get("is_snort"):
+        risk = max(risk, 66)
+    if issues.get("is_darkweb"):
+        risk = max(risk, 82)
+    rep.risk = float(risk)
+
+    flags = [k[3:] for k, v in issues.items() if k.startswith("is_") and v]
+    rep.metrics = {"Score (in/out)": f"{score.get('inbound', '?')}/{score.get('outbound', '?')}",
+                   "דגלים": ", ".join(flags) if flags else "—"}
+    sev = "dangerous" in (inbound, outbound) or "critical" in (inbound, outbound)
+    if sev or issues.get("is_scanner") or issues.get("is_darkweb"):
+        rep.findings.append(f"ציון סיכון {score.get('inbound', '?')}/{score.get('outbound', '?')} "
+                            f"(inbound/outbound)")
+    if flags:
+        rep.findings.append("דגלים: " + ", ".join(flags))
+    if not rep.findings:
+        rep.findings.append(f"ציון נקי (in/out: {score.get('inbound', '?')}/{score.get('outbound', '?')})")
+    return rep
+
+
 # ─────────────────────────────────────────────────────────────
 #  ORCHESTRATION
 # ─────────────────────────────────────────────────────────────
@@ -462,11 +575,17 @@ SOURCE_CHECKS = [
     ("vpnapi", "VPNAPI.io", check_vpnapi, "VPNAPI_KEY"),
     ("pc", "ProxyCheck.io", check_proxycheck, "PROXYCHECK_KEY"),
     ("otx", "AlienVault OTX", check_otx, "OTX_API_KEY"),
+    ("threatfox", "ThreatFox", check_threatfox, "THREATFOX_AUTH_KEY"),
+    ("criminalip", "CriminalIP", check_criminalip, "CRIMINALIP_KEY"),
     ("shodan", "Shodan InternetDB", check_shodan_idb, None),
     ("censys", "Censys", check_censys, "CENSYS_PAT"),
     ("ipinfo", "IPinfo", check_ipinfo, "IPINFO_TOKEN"),
     ("ipapi", "IP-API", check_ipapi, None),
 ]
+
+# Sources that work without a key but accept an optional one for higher limits.
+# Their fetcher must not disable itself on an empty key.
+OPTIONAL_KEY = {"threatfox"}
 
 
 def _timed(key, name, fn, ip, api_key):
