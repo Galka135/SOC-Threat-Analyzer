@@ -18,6 +18,10 @@
 | AlienVault OTX | דיווחי איום קהילתיים (Pulses) | `OTX_API_KEY` |
 | ThreatFox (abuse.ch) | האם ה-IP הוא IOC פעיל של malware / botnet-C2 | ללא מפתח (Auth-Key אופציונלי) |
 | CriminalIP | ציון סיכון inbound/outbound עצמאי + דגלי VPN/Proxy/TOR/Scanner | `CRIMINALIP_KEY` |
+| Tor Project (Onionoo) | המרשם הרשמי של Tor — זיהוי מוסמך של צומת יציאה | ללא מפתח |
+| SANS ISC / DShield | דיווחי תקיפה מרשת ה-honeypots של SANS | ללא מפתח |
+| Blocklist.de | תקיפות מדווחות מרשת fail2ban (SSH/bruteforce) | ללא מפתח |
+| StopForumSpam | תדירות + ביטחון של פעילות ספאם/abuse | ללא מפתח |
 | Shodan InternetDB | פורטים פתוחים, CVE, תיוגים | ללא מפתח |
 | Censys | שירותים חשופים | `CENSYS_PAT` |
 | IPinfo | גיאוגרפיה, ASN, rDNS; בטוקן Privacy — זיהוי VPN/Proxy/TOR/Hosting | `IPINFO_TOKEN` |

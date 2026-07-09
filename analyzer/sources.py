@@ -13,6 +13,7 @@ engine can aggregate them without knowing anything about specific APIs:
 
 from __future__ import annotations
 
+import re
 import socket
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -62,6 +63,12 @@ def _post(url, json_body, headers=None):
     except ValueError:
         data = {}
     return r.status_code, (data if isinstance(data, dict) else {})
+
+
+def _get_text(url, headers=None, params=None):
+    """GET → (status_code, text). For the few APIs that answer in plain text."""
+    r = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
+    return r.status_code, (r.text or "")
 
 
 def _dget(data, *keys, default=None):
@@ -563,6 +570,141 @@ def check_criminalip(ip, api_key):
     return rep
 
 
+def check_tor_project(ip, _api_key=None):
+    """Tor Project Onionoo — the authoritative answer on whether the IP is a
+    Tor relay / exit node. Keyless."""
+    rep = SourceReport("torproject", "Tor Project", weight=1.2,
+                       link=f"https://metrics.torproject.org/rs.html#search/{ip}")
+    status, data = _get("https://onionoo.torproject.org/details",
+                        params={"search": ip,
+                                "fields": "nickname,flags,running,last_seen,exit_addresses,or_addresses"})
+    if status != 200:
+        rep.error = f"HTTP {status}"
+        return rep
+
+    relays = data.get("relays") if isinstance(data.get("relays"), list) else []
+    rep.ok = True
+    if not relays:
+        rep.tor = False
+        rep.metrics = {"צומת Tor": "לא"}
+        rep.findings.append("לא רשומה כצומת Tor במרשם הרשמי")
+        return rep
+
+    relay = relays[0] if isinstance(relays[0], dict) else {}
+    flags = relay.get("flags") if isinstance(relay.get("flags"), list) else []
+    is_exit = "Exit" in flags or bool(relay.get("exit_addresses"))
+    running = bool(relay.get("running"))
+    nick = relay.get("nickname", "")
+
+    rep.tor = is_exit
+    rep.metrics = {"צומת Tor": "Exit" if is_exit else "Relay",
+                   "פעיל": "כן" if running else "לא"}
+    if is_exit:
+        rep.findings.append(f"צומת יציאה רשמי של Tor{f' ({nick})' if nick else ''}"
+                            + ("" if running else " — לא פעיל כרגע"))
+    else:
+        rep.findings.append(f"ממסר Tor פנימי (לא צומת יציאה){f' — {nick}' if nick else ''}")
+    return rep
+
+
+def check_dshield(ip, _api_key=None):
+    """SANS ISC / DShield — attack reports from the SANS honeypot network. Keyless."""
+    rep = SourceReport("dshield", "SANS ISC", weight=1.0,
+                       link=f"https://isc.sans.edu/ipinfo.html?ip={ip}")
+    status, data = _get(f"https://isc.sans.edu/api/ip/{ip}",
+                        params={"json": ""},
+                        headers={"User-Agent": "SOC-Threat-Analyzer (Streamlit app)"})
+    node = _dget(data, "ip", default={}) or {}
+    if status != 200 or not node:
+        rep.error = f"HTTP {status}"
+        return rep
+
+    def _int(v):
+        try:
+            return int(v or 0)
+        except (ValueError, TypeError):
+            return 0
+
+    reports = _int(node.get("count"))        # packets reported
+    targets = _int(node.get("attacks"))      # distinct targets attacked
+    feeds = node.get("threatfeeds") or {}
+    feed_names = list(feeds.keys()) if isinstance(feeds, dict) else []
+
+    rep.ok = True
+    if reports or targets or feed_names:
+        risk = min(85.0, 25 + targets * 4 + min(reports, 500) / 50)
+        if feed_names:
+            risk = max(risk, 60.0)
+        rep.risk = round(risk, 1)
+    else:
+        rep.risk = 2.0
+    rep.metrics = {"דיווחי תקיפה": reports, "מטרות שהותקפו": targets}
+    if targets:
+        rep.findings.append(f"תקפה {targets} מטרות ברשת ה-honeypots ({reports} דיווחים)")
+    elif reports:
+        rep.findings.append(f"{reports} דיווחי תקיפה ב-honeypots של SANS")
+    if feed_names:
+        rep.findings.append("מופיעה בפידי איום: " + ", ".join(feed_names[:4]))
+    if not rep.findings:
+        rep.findings.append("אין דיווחי תקיפה ברשת SANS")
+    return rep
+
+
+def check_stopforumspam(ip, _api_key=None):
+    """StopForumSpam — spam/abuse frequency with a confidence score. Keyless."""
+    rep = SourceReport("sfs", "StopForumSpam", weight=0.9,
+                       link=f"https://www.stopforumspam.com/ipcheck/{ip}")
+    status, data = _get("https://api.stopforumspam.org/api",
+                        params={"ip": ip, "json": ""})
+    node = _dget(data, "ip", default={}) or {}
+    if status != 200 or not data.get("success"):
+        rep.error = f"HTTP {status}"
+        return rep
+
+    appears = bool(node.get("appears"))
+    try:
+        confidence = float(node.get("confidence", 0) or 0)
+    except (ValueError, TypeError):
+        confidence = 0.0
+    frequency = node.get("frequency", 0) or 0
+
+    rep.ok = True
+    rep.risk = round(confidence, 1) if appears else 2.0
+    rep.metrics = {"דיווחי ספאם": frequency,
+                   "ביטחון": f"{confidence:g}%" if appears else "—"}
+    if appears:
+        rep.findings.append(f"מדווחת כמקור ספאם/abuse ({frequency} דיווחים, ביטחון {confidence:g}%)")
+    else:
+        rep.findings.append("לא מדווחת במאגרי ספאם")
+    return rep
+
+
+def check_blocklist_de(ip, _api_key=None):
+    """blocklist.de — fail2ban attack reports from thousands of servers. Keyless.
+    Plain-text API: 'attacks: N<br />reports: N'."""
+    rep = SourceReport("blde", "Blocklist.de", weight=1.0,
+                       link=f"https://www.blocklist.de/en/search.html?ip={ip}")
+    status, text = _get_text("https://api.blocklist.de/api.php", params={"ip": ip})
+    if status != 200 or "attacks" not in text:
+        rep.error = f"HTTP {status}"
+        return rep
+
+    m_att = re.search(r"attacks:\s*(\d+)", text)
+    m_rep = re.search(r"reports:\s*(\d+)", text)
+    attacks = int(m_att.group(1)) if m_att else 0
+    reports = int(m_rep.group(1)) if m_rep else 0
+
+    rep.ok = True
+    rep.risk = min(85.0, 30 + attacks * 2.0) if attacks else 2.0
+    rep.metrics = {"תקיפות": attacks, "דיווחים": reports}
+    if attacks:
+        rep.findings.append(f"{attacks} תקיפות מדווחות (fail2ban) ב-{reports} דיווחים "
+                            f"— לרוב SSH/bruteforce")
+    else:
+        rep.findings.append("אין תקיפות מדווחות ברשת fail2ban")
+    return rep
+
+
 # ─────────────────────────────────────────────────────────────
 #  ORCHESTRATION
 # ─────────────────────────────────────────────────────────────
@@ -577,6 +719,10 @@ SOURCE_CHECKS = [
     ("otx", "AlienVault OTX", check_otx, "OTX_API_KEY"),
     ("threatfox", "ThreatFox", check_threatfox, "THREATFOX_AUTH_KEY"),
     ("criminalip", "CriminalIP", check_criminalip, "CRIMINALIP_KEY"),
+    ("torproject", "Tor Project", check_tor_project, None),
+    ("dshield", "SANS ISC", check_dshield, None),
+    ("blde", "Blocklist.de", check_blocklist_de, None),
+    ("sfs", "StopForumSpam", check_stopforumspam, None),
     ("shodan", "Shodan InternetDB", check_shodan_idb, None),
     ("censys", "Censys", check_censys, "CENSYS_PAT"),
     ("ipinfo", "IPinfo", check_ipinfo, "IPINFO_TOKEN"),

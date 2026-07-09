@@ -624,9 +624,9 @@ else:
 <div style="font-size:2.6rem; margin-bottom:0.8rem">🛰️</div>
 <div style="font-size:1.05rem; color:var(--ink-2); font-weight:600">הזן כתובת IP כדי להתחיל תחקור</div>
 <div style="font-size:0.85rem; margin-top:0.5rem">
-המערכת מצליבה במקביל עד 13 מקורות מודיעין — VirusTotal, AbuseIPDB, IPQS, GreyNoise,
-VPNAPI, ProxyCheck, OTX, ThreatFox, CriminalIP, Shodan, Censys, IPinfo, IP-API —
-ומחשבת Verdict משוקלל אחד.
+המערכת מצליבה במקביל עד 17 מקורות מודיעין — VirusTotal, AbuseIPDB, IPQS, GreyNoise,
+VPNAPI, ProxyCheck, OTX, ThreatFox, CriminalIP, Tor Project, SANS ISC, Blocklist.de,
+StopForumSpam, Shodan, Censys, IPinfo, IP-API — ומחשבת Verdict משוקלל אחד.
 </div></div>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
