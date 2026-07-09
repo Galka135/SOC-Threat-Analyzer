@@ -363,6 +363,66 @@ def check_censys(ip, pat):
     return rep
 
 
+def check_ipinfo(ip, token):
+    """IPinfo.io — geo/ASN registration; on privacy-enabled tokens also
+    VPN/Proxy/TOR/Hosting detection. Handles both free and premium plans."""
+    rep = SourceReport("ipinfo", "IPinfo", weight=1.0,
+                       link=f"https://ipinfo.io/{ip}")
+    if not token:
+        rep.enabled = False
+        rep.error = "אין מפתח API"
+        return rep
+    status, data = _get(f"https://ipinfo.io/{ip}/json", params={"token": token})
+    if status != 200 or "ip" not in data:
+        rep.error = _dget(data, "error", "title", default=f"HTTP {status}")
+        return rep
+
+    rep.ok = True
+    # org arrives as "AS15169 Google LLC"; asn object present on higher plans
+    org = data.get("org", "") or ""
+    asn, org_name = "", org
+    if org.startswith("AS"):
+        parts = org.split(" ", 1)
+        asn = parts[0].replace("AS", "")
+        org_name = parts[1] if len(parts) > 1 else ""
+    asn_obj = _dget(data, "asn", default={}) or {}
+    if isinstance(asn_obj, dict) and asn_obj.get("asn"):
+        asn = str(asn_obj.get("asn", "")).replace("AS", "") or asn
+        org_name = asn_obj.get("name", org_name)
+
+    rep.context = {"country_code": data.get("country"), "city": data.get("city"),
+                   "region": data.get("region"), "org": org_name,
+                   "asn": asn or None, "rdns": data.get("hostname")}
+
+    priv = _dget(data, "privacy", default={}) or {}
+    if isinstance(priv, dict) and priv:  # premium: privacy detection available
+        rep.vpn = bool(priv.get("vpn"))
+        rep.proxy = bool(priv.get("proxy") or priv.get("relay"))
+        rep.tor = bool(priv.get("tor"))
+        rep.hosting = bool(priv.get("hosting")) or None
+        detected = [n for n, v in [("VPN", rep.vpn), ("Proxy", rep.proxy),
+                                   ("TOR", rep.tor)] if v]
+        if detected:
+            rep.risk = 60.0
+        elif rep.hosting:
+            rep.risk = 22.0
+        else:
+            rep.risk = 3.0
+        svc = priv.get("service") or ""
+        rep.metrics = {"מיסוך": ", ".join(detected) if detected else "לא זוהה",
+                       "שירות": svc or "—"}
+        rep.findings.append(
+            (f"זוהה מיסוך: {', '.join(detected)}" + (f" ({svc})" if svc else ""))
+            if detected else "Privacy Detection: לא זוהה מיסוך")
+        if rep.hosting and not detected:
+            rep.findings.append("תשתית אירוח/Hosting")
+    else:  # free/lite token: registration data only, no risk opinion
+        rep.metrics = {"ASN": f"AS{asn}" if asn else "—", "ארגון": org_name or "—"}
+        rep.findings.append((f"רישום: {org_name}" + (f" · AS{asn}" if asn else ""))
+                            if org_name else "רישום בסיסי בלבד")
+    return rep
+
+
 def check_ipapi(ip, _api_key=None):
     """ip-api.com — keyless geo/ASN baseline + proxy/hosting flags."""
     rep = SourceReport("ipapi", "IP-API", weight=0.8,
@@ -404,6 +464,7 @@ SOURCE_CHECKS = [
     ("otx", "AlienVault OTX", check_otx, "OTX_API_KEY"),
     ("shodan", "Shodan InternetDB", check_shodan_idb, None),
     ("censys", "Censys", check_censys, "CENSYS_PAT"),
+    ("ipinfo", "IPinfo", check_ipinfo, "IPINFO_TOKEN"),
     ("ipapi", "IP-API", check_ipapi, None),
 ]
 
@@ -444,8 +505,9 @@ def reverse_dns(ip: str) -> str:
 
 
 def extract_infrastructure(reports: dict, ip: str) -> dict:
-    """Merge infrastructure context — ip-api first, then VPNAPI / AbuseIPDB."""
+    """Merge infrastructure context — ip-api / IPinfo first, then VPNAPI / AbuseIPDB."""
     ipapi = reports.get("ipapi", SourceReport("", "")).context
+    ipinfo = reports.get("ipinfo", SourceReport("", "")).context
     vpnapi = reports.get("vpnapi", SourceReport("", "")).context
     abuse = reports.get("abuse", SourceReport("", "")).context
 
@@ -457,14 +519,15 @@ def extract_infrastructure(reports: dict, ip: str) -> dict:
 
     return {
         "ip": ip,
-        "rdns": pick(ipapi.get("rdns"), reverse_dns(ip)),
+        "rdns": pick(ipapi.get("rdns"), ipinfo.get("rdns"), reverse_dns(ip)),
         "country": pick(ipapi.get("country"), vpnapi.get("country")),
-        "country_code": pick(ipapi.get("country_code"), abuse.get("country_code"), ""),
-        "city": pick(ipapi.get("city"), vpnapi.get("city")),
-        "isp": pick(ipapi.get("isp"), abuse.get("isp")),
-        "org": pick(ipapi.get("org"), vpnapi.get("org")),
-        "asn": pick(ipapi.get("asn"), vpnapi.get("asn")),
-        "asname": pick(ipapi.get("asname"), vpnapi.get("org"), ""),
+        "country_code": pick(ipapi.get("country_code"), ipinfo.get("country_code"),
+                             abuse.get("country_code"), ""),
+        "city": pick(ipapi.get("city"), ipinfo.get("city"), vpnapi.get("city")),
+        "isp": pick(ipapi.get("isp"), ipinfo.get("org"), abuse.get("isp")),
+        "org": pick(ipapi.get("org"), ipinfo.get("org"), vpnapi.get("org")),
+        "asn": pick(ipapi.get("asn"), ipinfo.get("asn"), vpnapi.get("asn")),
+        "asname": pick(ipapi.get("asname"), ipinfo.get("org"), vpnapi.get("org"), ""),
         "usage_type": pick(abuse.get("usage_type"), ""),
         "domain": pick(abuse.get("domain"), ""),
         "mobile": bool(ipapi.get("mobile")),
