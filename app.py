@@ -1,975 +1,616 @@
-import streamlit as st
-import requests
-import ipaddress
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import plotly.graph_objects as go
+"""SOC Threat Analyzer — IP / VPN intelligence console.
 
-# ─────────────────────────────────────────────
-#  APP CONFIGURATION
-#  24/7 uptime is handled by an external ping
-#  (see .github/workflows/keep_alive.yml or UptimeRobot)
-# ─────────────────────────────────────────────
+UI layer only. Data collection lives in analyzer/sources.py and the
+cross-source aggregation logic in analyzer/verdict.py.
+"""
+
+import ipaddress
+import json
+import os
+from dataclasses import asdict
+from datetime import datetime, timezone
+
+import streamlit as st
+
+from analyzer import compute_verdict, extract_exposure, extract_infrastructure, run_scan
+from analyzer.sources import SOURCE_CHECKS
+
+# ─────────────────────────────────────────────────────────────
+#  PAGE CONFIG
+# ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Gal | IP-VPN Intelligence",
+    page_title="SOC Threat Analyzer | IP-VPN Intelligence",
     page_icon="🛡️",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="collapsed",
 )
 
-# ─────────────────────────────────────────────
-#  API KEYS & SECRETS (friendly error instead of KeyError crash)
-# ─────────────────────────────────────────────
-VT_API_KEY      = st.secrets.get("VT_API_KEY", "")
-ABUSE_API_KEY   = st.secrets.get("ABUSE_API_KEY", "")
-VPNAPI_KEY      = st.secrets.get("VPNAPI_KEY", "")
-IPQS_KEY        = st.secrets.get("IPQS_KEY", "")
-GREYNOISE_KEY   = st.secrets.get("GREYNOISE_KEY", "")
-CENSYS_PAT      = st.secrets.get("CENSYS_PAT", "")
-# ── Additional free intelligence sources (optional keys) ──
-OTX_API_KEY     = st.secrets.get("OTX_API_KEY", "")      # AlienVault OTX — free key: https://otx.alienvault.com  (Settings → API Integration)
-PROXYCHECK_KEY  = st.secrets.get("PROXYCHECK_KEY", "")   # ProxyCheck.io — free key: https://proxycheck.io/dashboard
-# Shodan InternetDB (https://internetdb.shodan.io) needs NO key — always on.
+# ─────────────────────────────────────────────────────────────
+#  API KEYS — all optional; sources without a key are skipped,
+#  never crash the app
+# ─────────────────────────────────────────────────────────────
+SECRET_NAMES = ["VT_API_KEY", "ABUSE_API_KEY", "IPQS_KEY", "GREYNOISE_KEY",
+                "VPNAPI_KEY", "PROXYCHECK_KEY", "OTX_API_KEY", "CENSYS_PAT"]
 
-MISSING_KEYS = [name for name, val in [
-    ("VT_API_KEY", VT_API_KEY),
-    ("ABUSE_API_KEY", ABUSE_API_KEY),
-    ("VPNAPI_KEY", VPNAPI_KEY),
-] if not val]
 
-if MISSING_KEYS:
-    st.error(f"❌ חסרים מפתחות חובה ב-secrets.toml: {', '.join(MISSING_KEYS)}")
-    st.stop()
+def _secret(name):
+    try:
+        return st.secrets.get(name, "") or os.environ.get(name, "")
+    except Exception:  # no secrets.toml at all — fall back to env vars
+        return os.environ.get(name, "")
 
-REQUEST_TIMEOUT = 12  # seconds, applied to every external API call
 
+KEYS = {name: _secret(name) for name in SECRET_NAMES}
+
+# ─────────────────────────────────────────────────────────────
+#  DESIGN SYSTEM
+# ─────────────────────────────────────────────────────────────
 st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Assistant:wght@200;300;400;600;700;800&family=Inter:wght@100;200;300;400;500;600;700;800;900&display=swap');
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
-    :root {
-        --bg-main: #0B1120;
-        --bg-card: rgba(15, 23, 42, 0.7);
-        --accent-cyan: #00E5FF;
-        --accent-blue: #0077FF;
-        --text-main: #E2E8F0;
-        --text-muted: #94A3B8;
-        --safe: #00FF88;
-        --warning: #FF9900;
-        --danger: #FF3333;
-    }
+:root {
+    --bg: #060B16;
+    --surface: #0D1526;
+    --surface-2: #111C31;
+    --border: rgba(148, 163, 184, 0.14);
+    --border-soft: rgba(148, 163, 184, 0.07);
+    --accent: #38BDF8;
+    --safe: #34D399;
+    --warn: #FBBF24;
+    --serious: #FB923C;
+    --critical: #F87171;
+    --ink: #E6EDF7;
+    --ink-2: #94A6BF;
+    --ink-3: #64748B;
+    --mono: 'JetBrains Mono', monospace;
+}
 
-    .stApp {
-        background: var(--bg-main) !important;
-        direction: rtl;
-        text-align: right;
-    }
+.stApp { background: var(--bg) !important; }
+/* RTL on content only — direction on .stApp breaks the sidebar
+   collapse transform (it slides into the page instead of off-screen) */
+[data-testid="stMain"] .block-container { direction: rtl; text-align: right; }
+[data-testid="stSidebarContent"] { direction: rtl; text-align: right; }
+[data-testid="stAppViewContainer"] {
+    background:
+        radial-gradient(ellipse 100% 55% at 50% -10%, rgba(56, 189, 248, 0.08) 0%, transparent 60%),
+        var(--bg) !important;
+    color: var(--ink);
+}
+[data-testid="stAppViewContainer"]::before {
+    content: '';
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background-image:
+        linear-gradient(rgba(56, 189, 248, 0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(56, 189, 248, 0.025) 1px, transparent 1px);
+    background-size: 44px 44px;
+}
+[data-testid="stHeader"] { background: transparent !important; }
+#MainMenu, footer { visibility: hidden !important; }
 
-    [data-testid="stAppViewContainer"] {
-        background: radial-gradient(ellipse 120% 80% at 50% -20%, rgba(0, 119, 255, 0.1) 0%, transparent 60%), var(--bg-main) !important;
-        color: var(--text-main);
-    }
+h1, h2, h3, h4, p, span, div, label { font-family: 'Heebo', sans-serif; }
+.mono, code { font-family: var(--mono) !important; }
 
-    h1, h2, h3, p, span, div {
-        font-family: 'Assistant', 'Inter', sans-serif !important;
-    }
+/* ── header ── */
+.app-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1.4rem 0.2rem 0.6rem; flex-wrap: wrap; gap: 1rem;
+}
+.brand { display: flex; align-items: center; gap: 14px; }
+.brand-mark {
+    width: 46px; height: 46px; border-radius: 12px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, rgba(56,189,248,0.2), rgba(56,189,248,0.05));
+    border: 1px solid rgba(56, 189, 248, 0.35); font-size: 1.4rem;
+}
+.brand h1 { font-size: 1.5rem !important; font-weight: 800 !important; color: var(--ink) !important; margin: 0 !important; padding: 0 !important; line-height: 1.2 !important; }
+.brand h1 b { color: var(--accent); }
+.brand .sub { font-size: 0.8rem; color: var(--ink-3); letter-spacing: 0.06em; }
+.header-meta { display: flex; gap: 10px; flex-wrap: wrap; }
+.meta-chip {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 9px; padding: 7px 13px;
+    font-size: 0.78rem; color: var(--ink-2); font-weight: 500;
+}
+.meta-chip .mono { font-size: 0.78rem; color: var(--ink); }
+.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--safe); box-shadow: 0 0 8px var(--safe); }
 
-    #MainMenu, footer, [data-testid="stToolbar"] { visibility: hidden !important; }
+/* ── search ── */
+[data-testid="stForm"] {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 1.1rem 1.3rem;
+}
+[data-testid="stTextInput"] div[data-baseweb="input"] {
+    background: var(--bg) !important;
+    border: 1px solid rgba(56, 189, 248, 0.3) !important;
+    border-radius: 10px !important;
+}
+[data-testid="stTextInput"] input {
+    font-family: var(--mono) !important; font-size: 1.15rem !important;
+    font-weight: 600 !important; color: var(--accent) !important;
+    text-align: center !important; direction: ltr; padding: 0.85rem !important;
+}
+.stFormSubmitButton button, .stButton button {
+    background: linear-gradient(135deg, #0284C7, #0EA5E9) !important;
+    color: #fff !important; font-weight: 700 !important;
+    border: none !important; border-radius: 10px !important;
+    padding: 0.85rem 1.4rem !important; width: 100%;
+}
+.stFormSubmitButton button:hover { filter: brightness(1.15); }
 
-    .site-header {
-        text-align: center;
-        padding: 3rem 1rem 2rem;
-        position: relative;
-    }
+/* ── cards ── */
+.card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 1.3rem 1.4rem; margin-bottom: 1rem;
+    position: relative; overflow: hidden;
+}
+.card-label {
+    font-size: 0.7rem; color: var(--ink-3); text-transform: uppercase;
+    letter-spacing: 0.18em; font-weight: 700; margin-bottom: 1rem;
+    display: flex; align-items: center; gap: 10px; font-family: var(--mono);
+}
+.card-label::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
 
-    .eyebrow {
-        font-family: 'Inter', sans-serif !important;
-        font-size: 0.8rem;
-        letter-spacing: 5px;
-        color: var(--accent-cyan);
-        text-transform: uppercase;
-        margin-bottom: 1rem;
-        font-weight: 600;
-        opacity: 0.8;
-    }
+/* ── verdict hero ── */
+.hero { display: grid; grid-template-columns: 190px 1.5fr 1fr; gap: 1.6rem; align-items: center; border-width: 2px; }
+.hero.lvl-CLEAN { border-color: rgba(52, 211, 153, 0.5); box-shadow: 0 0 60px rgba(52, 211, 153, 0.07); }
+.hero.lvl-SUSPICIOUS { border-color: rgba(251, 191, 36, 0.5); box-shadow: 0 0 60px rgba(251, 191, 36, 0.07); }
+.hero.lvl-MALICIOUS { border-color: rgba(248, 113, 113, 0.55); box-shadow: 0 0 60px rgba(248, 113, 113, 0.1); }
+.ring-num { font-family: var(--mono); font-size: 34px; font-weight: 700; }
+.ring-cap { font-family: var(--mono); font-size: 10px; fill: var(--ink-3); letter-spacing: 2px; }
+.verdict-level { font-size: 2.1rem; font-weight: 900; line-height: 1.1; display: flex; align-items: center; gap: 12px; }
+.verdict-level .en { font-family: var(--mono); font-size: 0.85rem; font-weight: 600; letter-spacing: 0.2em; opacity: 0.75; }
+.verdict-label { font-size: 1.05rem; font-weight: 600; color: var(--ink-2); margin-top: 4px; }
+.verdict-action {
+    margin-top: 12px; padding: 10px 14px; border-radius: 10px;
+    background: var(--surface-2); border-right: 3px solid var(--accent);
+    font-size: 0.92rem; color: var(--ink-2); line-height: 1.55;
+}
+.hero-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.hstat { background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: 12px; padding: 12px 14px; }
+.hstat .v { font-family: var(--mono); font-size: 1.35rem; font-weight: 700; color: var(--ink); direction: ltr; }
+.hstat .k { font-size: 0.72rem; color: var(--ink-3); margin-top: 2px; letter-spacing: 0.04em; }
+.floor-note {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: rgba(251, 191, 36, 0.07); border: 1px solid rgba(251, 191, 36, 0.25);
+    color: var(--warn); border-radius: 8px; padding: 4px 11px;
+    font-size: 0.78rem; font-weight: 600; margin: 2px 4px 2px 0;
+}
 
-    .site-header h1 {
-        font-size: 3.5rem !important;
-        font-weight: 800 !important;
-        color: #ffffff !important;
-        line-height: 1.1 !important;
-        text-shadow: 0 0 50px rgba(0, 229, 255, 0.3) !important;
-    }
+/* ── source matrix ── */
+.src-row {
+    display: grid; grid-template-columns: 200px 230px 1fr 78px 46px;
+    gap: 14px; align-items: center; padding: 11px 6px;
+    border-bottom: 1px solid var(--border-soft);
+}
+.src-row:last-child { border-bottom: none; }
+.src-head { color: var(--ink-3); font-size: 0.68rem; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.14em; padding-bottom: 6px; }
+.src-name { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 0.92rem; }
+.src-name .w { font-family: var(--mono); font-size: 0.68rem; color: var(--ink-3); background: var(--surface-2); border-radius: 6px; padding: 2px 7px; direction: ltr; }
+.dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.riskbar { display: flex; align-items: center; gap: 10px; direction: ltr; }
+.riskbar .track { flex: 1; height: 7px; border-radius: 4px; background: rgba(148, 163, 184, 0.12); overflow: hidden; }
+.riskbar .fill { height: 100%; border-radius: 4px; min-width: 2px; }
+.riskbar .num { font-family: var(--mono); font-size: 0.82rem; font-weight: 700; width: 34px; text-align: left; }
+.src-findings { font-size: 0.84rem; color: var(--ink-2); line-height: 1.45; }
+.src-findings.err { color: var(--ink-3); font-style: italic; }
+.src-lat { font-family: var(--mono); font-size: 0.72rem; color: var(--ink-3); direction: ltr; text-align: center; }
+.src-link a { color: var(--accent); text-decoration: none; font-size: 0.95rem; }
 
-    .site-header h1 span { color: var(--accent-cyan); }
+/* ── masking consensus ── */
+.mask-ch { background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: 12px; padding: 13px 15px; margin-bottom: 10px; }
+.mask-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.mask-name { font-family: var(--mono); font-weight: 700; font-size: 0.95rem; }
+.state-chip { font-size: 0.72rem; font-weight: 700; border-radius: 7px; padding: 3px 10px; letter-spacing: 0.03em; }
+.st-confirmed { background: rgba(248, 113, 113, 0.12); color: var(--critical); border: 1px solid rgba(248, 113, 113, 0.35); }
+.st-disputed { background: rgba(251, 146, 60, 0.12); color: var(--serious); border: 1px solid rgba(251, 146, 60, 0.35); }
+.st-clear { background: rgba(52, 211, 153, 0.1); color: var(--safe); border: 1px solid rgba(52, 211, 153, 0.3); }
+.st-unknown { background: var(--surface); color: var(--ink-3); border: 1px solid var(--border-soft); }
+.vote { display: inline-block; font-size: 0.72rem; font-weight: 600; border-radius: 6px; padding: 2px 8px; margin: 2px 0 2px 4px; }
+.vote-y { background: rgba(248, 113, 113, 0.1); color: var(--critical); }
+.vote-n { background: rgba(52, 211, 153, 0.08); color: var(--safe); }
+.vote-cap { font-size: 0.7rem; color: var(--ink-3); margin-left: 4px; }
 
-    [data-testid="stTextInput"] div[data-baseweb="input"] {
-        background: rgba(15, 23, 42, 0.8) !important;
-        border: 1px solid rgba(0, 229, 255, 0.3) !important;
-        border-radius: 14px !important;
-        transition: all 0.3s ease;
-    }
+/* ── data rows / infra ── */
+.data-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border-soft); }
+.data-row:last-child { border-bottom: none; }
+.data-key { color: var(--ink-3); font-size: 0.82rem; font-weight: 500; white-space: nowrap; }
+.data-val { color: var(--ink); font-weight: 600; font-size: 0.9rem; font-family: var(--mono); direction: ltr; text-align: left; overflow-wrap: anywhere; }
+.tag { display: inline-block; font-family: var(--mono); font-size: 0.72rem; background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: 6px; padding: 2px 8px; margin: 2px 0 2px 4px; direction: ltr; }
+.tag.bad { color: var(--critical); border-color: rgba(248, 113, 113, 0.35); }
 
-    [data-testid="stTextInput"] input {
-        font-family: 'Inter', sans-serif !important;
-        font-size: 1.8rem !important;
-        font-weight: 700 !important;
-        color: var(--accent-cyan) !important;
-        text-align: center !important;
-        padding: 1.2rem !important;
-    }
+/* ── analyst summary ── */
+.summary { background: rgba(56, 189, 248, 0.04); border-right: 3px solid var(--accent); border-radius: 4px 12px 12px 4px; padding: 1.2rem 1.4rem; font-size: 0.98rem; line-height: 1.75; color: var(--ink-2); }
+.summary b { color: var(--ink); }
+.summary .good { color: var(--safe); } .summary .warn { color: var(--warn); } .summary .bad { color: var(--critical); }
 
-    .card {
-        background: var(--bg-card);
-        border: 1px solid rgba(148, 163, 184, 0.1);
-        border-radius: 16px;
-        padding: 1.4rem 1.5rem;
-        backdrop-filter: blur(20px);
-        margin-bottom: 1rem;
-        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
-        position: relative;
-        overflow: hidden;
-    }
+/* copy line LTR */
+[data-testid="stCode"] { direction: ltr; text-align: left; }
+.stDownloadButton button { background: var(--surface-2) !important; color: var(--ink-2) !important; border: 1px solid var(--border) !important; border-radius: 10px !important; font-weight: 600 !important; width: 100%; }
 
-    .card::before {
-        content: '';
-        position: absolute;
-        top: 0; left: 0; right: 0;
-        height: 2px;
-        background: linear-gradient(90deg, transparent, var(--accent-cyan), transparent);
-    }
+.section-title { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.3em; text-transform: uppercase; color: var(--ink-3); text-align: center; margin: 1.6rem 0 0.9rem; }
 
-    .card-label {
-        font-size: 0.75rem;
-        color: var(--text-muted);
-        text-transform: uppercase;
-        letter-spacing: 2px;
-        font-weight: 600;
-        margin-bottom: 1rem;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
+.app-footer { margin-top: 3.5rem; padding: 1.6rem; text-align: center; border-top: 1px solid var(--border-soft); color: var(--ink-3); font-size: 0.8rem; }
 
-    .card-label::after {
-        content: '';
-        flex: 1;
-        height: 1px;
-        background: rgba(148, 163, 184, 0.1);
-    }
-
-    .verdict-card { text-align: center; border-width: 2px; }
-    .verdict-glow-safe { border-color: var(--safe); box-shadow: 0 0 40px rgba(0, 255, 136, 0.15); }
-    .verdict-glow-warning { border-color: var(--warning); box-shadow: 0 0 40px rgba(255, 153, 0, 0.15); }
-    .verdict-glow-danger { border-color: var(--danger); box-shadow: 0 0 40px rgba(255, 51, 51, 0.15); }
-
-    .verdict-title {
-        font-size: 2.5rem !important;
-        font-weight: 900 !important;
-        margin: 1rem 0;
-        text-transform: uppercase;
-    }
-
-    .data-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 0.8rem 0;
-        border-bottom: 1px solid rgba(148, 163, 184, 0.05);
-    }
-
-    .data-row:last-child { border-bottom: none; }
-
-    .data-key {
-        color: var(--text-muted);
-        font-size: 0.9rem;
-        font-weight: 500;
-    }
-
-    .data-val {
-        color: var(--text-main);
-        font-weight: 700;
-        font-size: 1.1rem;
-        text-align: left;
-        font-family: 'Inter', sans-serif !important;
-    }
-
-    .accent-val { color: var(--accent-cyan); }
-
-    .metrics-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 1rem;
-        margin-top: 1.5rem;
-    }
-
-    .metric-item {
-        background: rgba(255,255,255,0.03);
-        padding: 1.2rem;
-        border-radius: 12px;
-        text-align: center;
-    }
-
-    .metric-val {
-        font-size: 1.8rem;
-        font-weight: 800;
-        line-height: 1;
-        margin-bottom: 0.3rem;
-    }
-
-    .metric-label {
-        font-size: 0.7rem;
-        color: var(--text-muted);
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-
-    .intel-summary {
-        background: rgba(0, 229, 255, 0.03);
-        border-right: 4px solid var(--accent-cyan);
-        padding: 1.5rem;
-        border-radius: 0 12px 12px 0;
-        font-size: 1.05rem;
-        line-height: 1.6;
-        color: #CBD5E1;
-    }
-
-    /* ── SOC source-consensus strip: every source's status at a glance ── */
-    .strip-label {
-        text-align: center;
-        font-family: 'Inter', sans-serif !important;
-        font-size: 0.7rem;
-        letter-spacing: 3px;
-        text-transform: uppercase;
-        color: var(--text-muted);
-        margin: 0.5rem 0 0.6rem;
-    }
-    .src-strip {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        justify-content: center;
-        margin-bottom: 1.5rem;
-    }
-    .src-chip {
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        background: rgba(15, 23, 42, 0.7);
-        border: 1px solid rgba(148, 163, 184, 0.15);
-        border-radius: 10px;
-        padding: 6px 12px;
-        font-family: 'Inter', sans-serif !important;
-        font-size: 0.8rem;
-        font-weight: 600;
-        color: var(--text-main);
-        white-space: nowrap;
-    }
-    .src-chip .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-    .src-chip .src-val { color: var(--text-muted); font-weight: 700; }
-    .chip-flag { border-color: rgba(255, 51, 51, 0.45); background: rgba(255, 51, 51, 0.06); }
-    .chip-clean { border-color: rgba(0, 255, 136, 0.25); }
-    .chip-none { opacity: 0.4; }
-
-    /* Analyst copy-line: st.code block used as a ticket-ready one-liner */
-    [data-testid="stCode"] { direction: ltr; text-align: left; }
-    </style>
+@media (max-width: 1000px) {
+    .hero { grid-template-columns: 1fr; text-align: center; }
+    .src-row { grid-template-columns: 1fr; gap: 6px; }
+    .src-head { display: none; }
+}
+</style>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────
-#  SAFE DATA ACCESS — APIs sometimes return {"data": null};
-#  dict.get("data", {}) then returns None and .get() on None crashes.
-# ─────────────────────────────────────────────
-def as_dict(value):
-    return value if isinstance(value, dict) else {}
+# ─────────────────────────────────────────────────────────────
+#  HELPERS
+# ─────────────────────────────────────────────────────────────
+BAND = {
+    "CLEAN": "var(--safe)",
+    "SUSPICIOUS": "var(--warn)",
+    "MALICIOUS": "var(--critical)",
+}
 
-def dget(data, *keys, default=None):
-    """Nested-safe get: dget(abuse, 'data', 'usageType', default='') never crashes."""
-    cur = data
-    for key in keys:
-        cur = as_dict(cur).get(key)
-    return default if cur is None else cur
 
-def fetch_json(url, headers=None, params=None, auth=None):
-    """Always returns a dict — {} on any network/HTTP/JSON failure."""
-    try:
-        r = requests.get(url, headers=headers, params=params, auth=auth, timeout=REQUEST_TIMEOUT)
-        data = r.json()
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+def risk_color(risk):
+    if risk is None:
+        return "var(--ink-3)"
+    if risk >= 70:
+        return "var(--critical)"
+    if risk >= 35:
+        return "var(--warn)"
+    return "var(--safe)"
 
-# ─────────────────────────────────────────────
-#  API FETCHERS
-# ─────────────────────────────────────────────
-def fetch_vt(ip):
-    return fetch_json(f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
-                      headers={"x-apikey": VT_API_KEY})
 
-def fetch_abuse(ip):
-    return fetch_json("https://api.abuseipdb.com/api/v2/check",
-                      headers={"Key": ABUSE_API_KEY, "Accept": "application/json"},
-                      params={"ipAddress": ip, "maxAgeInDays": 90})
+def ring_svg(score, color):
+    r, cx = 52, 60
+    circ = 2 * 3.14159 * r
+    offset = circ * (1 - score / 100)
+    return (
+        f'<svg viewBox="0 0 120 120" width="180" height="180">'
+        f'<circle cx="{cx}" cy="{cx}" r="{r}" stroke="rgba(148,163,184,0.12)" stroke-width="9" fill="none"/>'
+        f'<circle cx="{cx}" cy="{cx}" r="{r}" stroke="{color}" stroke-width="9" fill="none" '
+        f'stroke-linecap="round" stroke-dasharray="{circ:.1f}" stroke-dashoffset="{offset:.1f}" '
+        f'transform="rotate(-90 {cx} {cx})"/>'
+        f'<text x="{cx}" y="64" text-anchor="middle" class="ring-num" fill="{color}">{score}</text>'
+        f'<text x="{cx}" y="84" text-anchor="middle" class="ring-cap">RISK / 100</text>'
+        f'</svg>'
+    )
 
-def fetch_vpnapi(ip):
-    return fetch_json(f"https://vpnapi.io/api/{ip}", params={"key": VPNAPI_KEY})
-
-def fetch_ipqs(ip):
-    if not IPQS_KEY:
-        return {}
-    return fetch_json(f"https://ipqualityscore.com/api/json/ip/{IPQS_KEY}/{ip}",
-                      params={"strictness": 3})
-
-def fetch_greynoise(ip):
-    if not GREYNOISE_KEY:
-        return {}
-    return fetch_json(f"https://api.greynoise.io/v3/community/{ip}",
-                      headers={"key": GREYNOISE_KEY})
-
-def fetch_censys(ip):
-    if not CENSYS_PAT:
-        return {}
-    if ":" in CENSYS_PAT:
-        uid, secret = CENSYS_PAT.split(":", 1)
-        return fetch_json(f"https://search.censys.io/api/v2/hosts/{ip}", auth=(uid, secret))
-    return fetch_json(f"https://search.censys.io/api/v2/hosts/{ip}",
-                      headers={"Authorization": f"Bearer {CENSYS_PAT}"})
-
-def fetch_shodan_idb(ip):
-    """Shodan InternetDB — free, no API key. Returns open ports, CVEs, tags, hostnames."""
-    return fetch_json(f"https://internetdb.shodan.io/{ip}")
-
-def fetch_otx(ip):
-    """AlienVault OTX — community threat pulses. Free API key required."""
-    if not OTX_API_KEY:
-        return {}
-    return fetch_json(f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
-                      headers={"X-OTX-API-KEY": OTX_API_KEY})
-
-def fetch_proxycheck(ip):
-    """ProxyCheck.io — independent VPN/Proxy/TOR + risk score. Free API key (works keyless at low quota)."""
-    params = {"vpn": 1, "risk": 1}
-    if PROXYCHECK_KEY:
-        params["key"] = PROXYCHECK_KEY
-    return fetch_json(f"https://proxycheck.io/v2/{ip}", params=params)
 
 @st.cache_data(ttl=600, show_spinner=False)
-def run_full_scan(ip):
-    """Fetch all sources in parallel. Cached 10 min per IP."""
-    tasks = {
-        "vt": fetch_vt, "abuse": fetch_abuse, "vpn": fetch_vpnapi,
-        "ipqs": fetch_ipqs, "gn": fetch_greynoise, "censys": fetch_censys,
-        "shodan": fetch_shodan_idb, "otx": fetch_otx, "proxycheck": fetch_proxycheck,
-    }
-    results = {}
-    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
-        futures = {pool.submit(fn, ip): name for name, fn in tasks.items()}
-        for fut in as_completed(futures):
-            name = futures[fut]
-            try:
-                results[name] = as_dict(fut.result())
-            except Exception:
-                results[name] = {}
-    return results
+def cached_scan(ip, keys):
+    return run_scan(ip, keys)
 
-# ─────────────────────────────────────────────
-#  HELPER FUNCTIONS
-# ─────────────────────────────────────────────
-def is_valid_ip(ip):
+
+def validate_target(raw):
+    """Returns (ip, error_message)."""
+    ip = (raw or "").strip()
+    if not ip:
+        return None, "יש להזין כתובת IP."
     try:
-        ipaddress.ip_address(ip.strip())
-        return True
+        addr = ipaddress.ip_address(ip)
     except ValueError:
-        return False
+        return None, f"'{ip}' אינה כתובת IP תקינה (IPv4 / IPv6)."
+    if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast or addr.is_reserved:
+        return None, ("זוהי כתובת פרטית/שמורה (Bogon) — למקורות מודיעין חיצוניים אין עליה מידע. "
+                      "יש לבדוק כתובת ציבורית.")
+    return str(addr), None
 
-def create_gauge(score):
-    color = "#00FF88" if score <= 15 else "#FF9900" if score <= 50 else "#FF3333"
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=score,
-        number={'suffix': "%", 'font': {'size': 60, 'color': color, 'family': 'Inter'}},
-        gauge={
-            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "rgba(148, 163, 184, 0.2)"},
-            'bar': {'color': color, 'thickness': 0.8},
-            'bgcolor': "rgba(255,255,255,0.05)",
-            'borderwidth': 0,
-            'steps': [
-                {'range': [0, 15], 'color': 'rgba(0, 255, 136, 0.1)'},
-                {'range': [15, 50], 'color': 'rgba(255, 153, 0, 0.1)'},
-                {'range': [50, 100], 'color': 'rgba(255, 51, 51, 0.1)'},
-            ]
-        }
-    ))
-    fig.update_layout(
-        height=280,
-        margin=dict(l=30, r=30, t=50, b=20),
-        paper_bgcolor="rgba(0,0,0,0)",
-        font={'color': "#94A3B8", 'family': 'Inter'}
-    )
-    return fig
 
-def generate_intel_summary(ctx):
-    """Cross-correlates ('שחלול') every intelligence source into one consolidated summary.
+def render_verdict_hero(v):
+    color = BAND[v.level]
+    icon = {"CLEAN": "🟢", "SUSPICIOUS": "🟠", "MALICIOUS": "🔴"}[v.level]
+    floors_html = "".join(f'<span class="floor-note">⤴ {f}</span>' for f in v.floors)
+    st.markdown(f"""<div class="card hero lvl-{v.level}">
+<div style="text-align:center">{ring_svg(v.score, color)}</div>
+<div>
+  <div class="verdict-level" style="color:{color}">{icon} {v.level_he} <span class="en">{v.level}</span></div>
+  <div class="verdict-label">{v.label}</div>
+  <div class="verdict-action"><b>המלצת פעולה:</b> {v.action}</div>
+  <div style="margin-top:10px">{floors_html}</div>
+</div>
+<div class="hero-stats">
+  <div class="hstat"><div class="v" style="color:{color}">{v.confidence}%</div><div class="k">רמת ביטחון בהכרעה</div></div>
+  <div class="hstat"><div class="v">{len(v.flagged)}/{v.opinions}</div><div class="k">מקורות שסימנו סיכון</div></div>
+  <div class="hstat"><div class="v">{v.consensus:g}</div><div class="k">קונצנזוס משוקלל</div></div>
+  <div class="hstat"><div class="v">{v.peak:g}</div><div class="k">שיא בודד ({v.peak_source or '—'})</div></div>
+</div>
+</div>""", unsafe_allow_html=True)
 
-    Instead of listing each feed in isolation, this weaves all responses together:
-    it counts how many *active* sources agree the address is risky (the consensus),
-    groups the findings by intelligence dimension, and closes with a single unified
-    conclusion aligned with the final verdict.
-    """
-    ip           = ctx["ip"]
-    provider     = ctx["provider"]
-    country      = ctx["country"]
-    city         = ctx["city"]
-    asn          = ctx["asn"]
-    usage        = ctx["usage_type"] or ""
-    masking      = ctx["masking"]
-    mal_engines  = ctx["mal_engines"]
-    abuse_score  = ctx["abuse_score"]
-    total_reports = ctx["total_reports"]
-    fraud_score  = ctx["fraud_score"]
-    ipqs_ok      = ctx["ipqs_ok"]
-    ipqs         = ctx["ipqs"]
-    gn           = ctx["gn"]
-    open_ports_count = ctx["open_ports_count"]
-    otx_pulse_count  = ctx["otx_pulse_count"]
-    otx_pulse_names  = ctx["otx_pulse_names"]
-    pc_ok        = ctx["pc_ok"]
-    pc_risk      = ctx["pc_risk"]
-    shodan_vulns = ctx["shodan_vulns"]
-    shodan_tags  = ctx["shodan_tags"]
-    active_sources   = ctx["active_sources"]   # sources that returned data
-    status       = ctx["status"]               # MALICIOUS / SUSPICIOUS / CLEAN
 
-    gn_classification = dget(gn, "classification", default="")
-    gn_noise = bool(dget(gn, "noise", default=False))
-    recent_abuse = bool(dget(ipqs, "recent_abuse", default=False)) if ipqs_ok else False
-    bot_status = bool(dget(ipqs, "bot_status", default=False)) if ipqs_ok else False
-
-    # ── Cross-source correlation: which feeds flag this address as risky ──
-    risk_flags = []   # (source, short reason)
-    if mal_engines > 0:
-        risk_flags.append(("VirusTotal", f"{mal_engines} מנועים זדוניים"))
-    if abuse_score > 25:
-        risk_flags.append(("AbuseIPDB", f"ציון אמון {abuse_score}%"))
-    if ipqs_ok and fraud_score > 75:
-        risk_flags.append(("IPQualityScore", f"ציון הונאה {fraud_score}"))
-    if gn_noise and gn_classification == "malicious":
-        risk_flags.append(("GreyNoise", "סורק/איום פעיל"))
-    if otx_pulse_count > 0:
-        risk_flags.append(("AlienVault OTX", f"{otx_pulse_count} דיווחי איום"))
-    if pc_ok and pc_risk >= 66:
-        risk_flags.append(("ProxyCheck", f"סיכון {pc_risk}"))
-    if shodan_vulns:
-        risk_flags.append(("Shodan", f"{len(shodan_vulns)} חולשות ידועות"))
-    if masking:
-        risk_flags.append(("Masking", ", ".join(masking)))
-
-    flagged_sources = len(risk_flags)
-
-    # ── 1. Identity ──
-    loc = f"{city}, {country}".strip(", ") or country
-    lines = [f"הכתובת <b>{ip}</b> משויכת לתשתית <b>{provider}</b> (AS{asn}) וממוקמת ב<b>{loc}</b>."]
-    if "Data Center" in usage or "Hosting" in usage:
-        lines[-1] += " זוהי תשתית חוות שרתים (Data Center) — דפוס נפוץ של בוטים ותוקפים מאורגנים."
-    elif "ISP" in usage:
-        lines[-1] += " הכתובת משויכת לספק אינטרנט ביתי/מסחרי (ISP)."
-
-    # ── 2. Consensus line — the actual "שחלול" across all responses ──
-    if flagged_sources == 0:
-        consensus = (f"<span style='color:#00FF88'>🧩 <b>שחלול מקורות:</b> מתוך {active_sources} "
-                     f"מקורות מודיעין פעילים, אף מקור לא סימן את הכתובת כמסוכנת — הצלבה נקייה.</span>")
-    else:
-        sources_txt = " • ".join(f"{s} ({r})" for s, r in risk_flags)
-        color = "#FF3333" if flagged_sources >= 2 else "#FF9900"
-        consensus = (f"<span style='color:{color}'>🧩 <b>שחלול מקורות:</b> מתוך {active_sources} "
-                     f"מקורות מודיעין פעילים, <b>{flagged_sources}</b> מצביעים על סיכון: {sources_txt}.</span>")
-    lines.append(consensus)
-
-    # ── 3. Reputation dimension (VT + AbuseIPDB woven together) ──
-    rep_parts = []
-    if mal_engines > 0:
-        rep_parts.append(f"<b>VirusTotal</b> — {mal_engines} מנועי אבטחה מדווחים על פעילות זדונית")
-    if abuse_score > 0 or total_reports > 0:
-        rep_parts.append(f"<b>AbuseIPDB</b> — ציון אמון {abuse_score}% מבוסס על {total_reports} דיווחים")
-    if rep_parts:
-        both = mal_engines > 0 and abuse_score > 25
-        prefix = "🚨 " if both else "📊 "
-        color = "#FF3333" if both else "#FF9900" if (mal_engines > 0 or abuse_score > 25) else "#94A3B8"
-        joiner = "; ובהצלבה מול " if both else "; "
-        lines.append(f"<span style='color:{color}'>{prefix}<b>מוניטין:</b> " + joiner.join(rep_parts) + ".</span>")
-
-    # ── 4. Fraud & bot behaviour (IPQS) ──
-    if ipqs_ok and (fraud_score > 40 or recent_abuse or bot_status):
-        extra = []
-        if bot_status:
-            extra.append("פעילות בוט")
-        if recent_abuse:
-            extra.append("היסטוריית שימוש-לרעה עדכנית")
-        extra_txt = f" ({', '.join(extra)})" if extra else ""
-        color = "#FF3333" if fraud_score > 75 else "#FF9900"
-        lines.append(f"<span style='color:{color}'>🤖 <b>IPQualityScore:</b> ציון הונאה {fraud_score}{extra_txt}.</span>")
-
-    # ── 5. Anonymization / masking ──
-    if masking:
-        lines.append(f"<span style='color:#FF3333'>⚠️ <b>הסוואת זהות:</b> הכתובת מזוהה כנקודת הסוואה פעילה "
-                     f"({', '.join(masking)}), מה שמעיד על ניסיון הסתרת זהות.</span>")
-
-    # ── 6. Network noise (GreyNoise) ──
-    if gn_noise:
-        if gn_classification == "malicious":
-            lines.append("<span style='color:#FF3333'>🚨 <b>GreyNoise:</b> זוהה סורק או איום פעיל ברשת שמקורו בכתובת זו.</span>")
-        elif gn_classification == "benign":
-            lines.append("<span style='color:#00FF88'>✅ <b>GreyNoise:</b> סורק ידוע ובטוח (לדוגמה חברות מחקר).</span>")
+def render_source_matrix(reports):
+    rows = ['<div class="card"><div class="card-label">מטריצת מקורות — כל חוות הדעת</div>',
+            '<div class="src-row src-head"><div>מקור</div><div>ציון סיכון (0-100)</div>'
+            '<div>ממצאים</div><div>זמן תגובה</div><div></div></div>']
+    for rep in reports.values():
+        if not rep.enabled:
+            dot, findings_cls, findings = "var(--ink-3)", "err", "לא מוגדר — חסר מפתח API"
+            bar = '<div class="riskbar"><span class="num" style="color:var(--ink-3)">—</span></div>'
+            lat = "—"
+        elif not rep.ok:
+            dot, findings_cls, findings = "var(--serious)", "err", f"תקלה: {rep.error or 'ללא נתונים'}"
+            bar = '<div class="riskbar"><span class="num" style="color:var(--ink-3)">—</span></div>'
+            lat = f"{rep.latency_ms}ms"
         else:
-            lines.append("<span style='color:#FF9900'>📡 <b>GreyNoise:</b> הכתובת מייצרת רעש רשת (סריקות) ללא סיווג חד-משמעי.</span>")
-
-    # ── 7. Community threat pulses (AlienVault OTX) ──
-    if otx_pulse_count > 0:
-        names_txt = f" (לדוגמה: {', '.join(otx_pulse_names)})" if otx_pulse_names else ""
-        color = "#FF3333" if otx_pulse_count > 3 else "#FF9900"
-        lines.append(f"<span style='color:{color}'>🌐 <b>AlienVault OTX:</b> הכתובת מופיעה ב-{otx_pulse_count} "
-                     f"דיווחי איום קהילתיים (Pulses){names_txt}.</span>")
-
-    # ── 8. Attack surface & known vulnerabilities (Censys + Shodan) ──
-    if open_ports_count > 5:
-        lines.append(f"🔍 <b>Censys:</b> לכתובת זו שטח פנים רחב לאינטרנט עם {open_ports_count} פורטים פתוחים.")
-    elif open_ports_count > 0:
-        lines.append(f"🔍 <b>Censys:</b> נמצאו {open_ports_count} שירותים פתוחים לרשת.")
-
-    if shodan_vulns:
-        preview = ", ".join(shodan_vulns[:4]) + ("…" if len(shodan_vulns) > 4 else "")
-        lines.append(f"<span style='color:#FF3333'>🛠️ <b>Shodan:</b> זוהו {len(shodan_vulns)} חולשות ידועות (CVE) "
-                     f"בשירותים החשופים: {preview}.</span>")
-    elif shodan_tags:
-        lines.append(f"🏷️ <b>Shodan:</b> תיוגי תשתית: {', '.join(shodan_tags[:5])}.")
-
-    # ── 9. Consolidated conclusion (aligned with the final verdict) ──
-    if status == "MALICIOUS":
-        lines.append(f"<span style='color:#FF3333'><b>🔴 מסקנה מסכמת:</b> ההצלבה בין {flagged_sources} מקורות "
-                     f"מבססת רמת ודאות גבוהה לאיום — מומלצת חסימה מיידית.</span>")
-    elif status == "SUSPICIOUS":
-        lines.append("<span style='color:#FF9900'><b>🟠 מסקנה מסכמת:</b> קיימים אינדיקטורים חלקיים בין המקורות. "
-                     "מומלצת בחינה מעמיקה והצלבה ידנית לפני קבלת החלטה.</span>")
-    else:
-        lines.append("<span style='color:#00FF88'><b>🟢 מסקנה מסכמת:</b> הצלבת כלל המקורות אינה מציגה אינדיקטורים "
-                     "לפעילות זדונית — הכתובת מוגדרת כנקייה.</span>")
-
-    return "<br><br>".join(lines)
-
-def src_state(responded, flagged):
-    """Map a source's outcome to a chip state for the consensus strip."""
-    if not responded:
-        return "none"
-    return "flag" if flagged else "clean"
-
-def build_source_strip(sources):
-    """Render the SOC source-consensus strip. `sources` = list of (name, state, value)."""
-    dot_color = {"flag": "#FF3333", "clean": "#00FF88", "none": "#64748B"}
-    chips = []
-    for name, state, val in sources:
-        val_html = f"<span class='src-val'>{val}</span>" if val not in ("", None) else ""
-        chips.append(
-            f"<div class='src-chip chip-{state}'>"
-            f"<span class='dot' style='background:{dot_color[state]}'></span>{name}{val_html}</div>"
+            color = risk_color(rep.risk)
+            dot = color if rep.risk is not None else "var(--accent)"
+            findings_cls = ""
+            findings = " · ".join(rep.findings[:3]) if rep.findings else "—"
+            if rep.risk is not None:
+                bar = (f'<div class="riskbar"><span class="num" style="color:{color}">{rep.risk:g}</span>'
+                       f'<div class="track"><div class="fill" style="width:{max(rep.risk, 2):g}%;background:{color}"></div></div></div>')
+            else:
+                bar = '<div class="riskbar"><span class="num vote-cap">ללא ציון</span></div>'
+            lat = f"{rep.latency_ms}ms"
+        link = f'<a href="{rep.link}" target="_blank" title="דוח מלא">↗</a>' if rep.link else ""
+        rows.append(
+            f'<div class="src-row">'
+            f'<div class="src-name"><span class="dot" style="background:{dot}"></span>{rep.name}'
+            f'<span class="w" title="משקל בחישוב">w {rep.weight:g}</span></div>'
+            f'{bar}<div class="src-findings {findings_cls}">{findings}</div>'
+            f'<div class="src-lat">{lat}</div><div class="src-link">{link}</div></div>'
         )
-    return "<div class='strip-label'>// source consensus //</div><div class='src-strip'>" + "".join(chips) + "</div>"
+    rows.append("</div>")
+    st.markdown("".join(rows), unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────
-#  UI HEADER
-# ─────────────────────────────────────────────
-now = datetime.now().strftime("%d/%m/%Y | %H:%M")
 
-st.markdown(f"""
-    <div class="site-header">
-        <div class="eyebrow">// security operations center //</div>
-        <div style="display:flex; align-items:center; justify-content:center; gap:2rem;">
-            <div style="text-align:right">
-                <h1>Gal <span>IP-VPN</span> Intelligence</h1>
-                <p style="color:#94A3B8; letter-spacing:2px; margin-top:0.5rem; font-size:1.1rem;">
-                    מערכת ניתוח איומים בזמן אמת &nbsp;•&nbsp; {now}
-                </p>
-            </div>
-        </div>
-    </div>
-""", unsafe_allow_html=True)
+def render_masking(v):
+    state_he = {"confirmed": "מאומת", "disputed": "במחלוקת", "clear": "נקי", "unknown": "אין נתונים"}
+    parts = ['<div class="card"><div class="card-label">קונצנזוס מיסוך — VPN / Proxy / TOR</div>']
+    for ch in v.masking.values():
+        votes = "".join(f'<span class="vote vote-y" title="זיהה מיסוך">⚠ {n}</span>' for n in ch.detected_by)
+        votes += "".join(f'<span class="vote vote-n" title="לא זיהה">✓ {n}</span>' for n in ch.cleared_by)
+        cap = (f'<span class="vote-cap">זוהה ע"י {len(ch.detected_by)} מתוך '
+               f'{len(ch.detected_by) + len(ch.cleared_by)} מקורות שבדקו</span>'
+               if (ch.detected_by or ch.cleared_by) else '<span class="vote-cap">אף מקור פעיל לא בדק ערוץ זה</span>')
+        parts.append(
+            f'<div class="mask-ch"><div class="mask-top"><span class="mask-name">{ch.name}</span>'
+            f'<span class="state-chip st-{ch.state}">{state_he[ch.state]}</span></div>'
+            f'<div>{votes}</div><div style="margin-top:4px">{cap}</div></div>'
+        )
+    parts.append("</div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────
-#  SEARCH SECTION
-# ─────────────────────────────────────────────
-_, mid_col, _ = st.columns([1, 1.8, 1])
-with mid_col:
-    with st.form("search_query"):
-        target_ip = st.text_input("IP", placeholder="הזן כתובת IP לחקירה...", label_visibility="collapsed")
-        search_btn = st.form_submit_button("הפעל חקירה מאובטחת ⟶")
 
-# ─────────────────────────────────────────────
-#  SCAN EXECUTION
-# ─────────────────────────────────────────────
-if search_btn or st.query_params.get("ip"):
-    ip = (target_ip or "").strip() or (st.query_params.get("ip") or "").strip()
+def render_infrastructure(infra):
+    flag = f" {infra['country_code']}" if infra.get("country_code") and infra["country_code"] != "—" else ""
+    rows = [
+        ("כתובת IP", infra["ip"]),
+        ("Reverse DNS", infra["rdns"]),
+        ("מדינה / עיר", f"{infra['country']}{flag} · {infra['city']}"),
+        ("ספק (ISP)", infra["isp"]),
+        ("ארגון", infra["org"]),
+        ("ASN", f"AS{infra['asn']}" if infra["asn"] != "—" else "—"),
+        ("סוג שימוש", infra["usage_type"] + (" · Mobile" if infra.get("mobile") else "")),
+        ("דומיין", infra["domain"]),
+    ]
+    body = "".join(f'<div class="data-row"><span class="data-key">{k}</span>'
+                   f'<span class="data-val">{val}</span></div>'
+                   for k, val in rows if val and val != "—")
+    st.markdown(f'<div class="card"><div class="card-label">תשתית ורישום</div>{body}</div>',
+                unsafe_allow_html=True)
 
-    if not ip or not is_valid_ip(ip):
-        st.error("❌ כתובת IP אינה תקינה. אנא בדוק שנית.")
+
+def render_exposure(exp):
+    ports = "".join(f'<span class="tag">{p}</span>' for p in exp["ports"][:20]) or '<span class="vote-cap">לא נמצאו</span>'
+    vulns = "".join(f'<span class="tag bad">{v_}</span>' for v_ in exp["vulns"][:12]) or '<span class="vote-cap">לא נמצאו</span>'
+    tags = "".join(f'<span class="tag">{t}</span>' for t in exp["tags"][:8])
+    censys = "".join(f'<span class="tag">{s}</span>' for s in exp["censys_services"][:15])
+    hostnames = "".join(f'<span class="tag">{h}</span>' for h in exp["hostnames"][:5])
+    sections = [
+        ("פורטים פתוחים (Shodan)", ports),
+        ("חולשות ידועות (CVE)", vulns),
+    ]
+    if tags:
+        sections.append(("תיוגי תשתית", tags))
+    if hostnames:
+        sections.append(("Hostnames", hostnames))
+    if censys:
+        sections.append(("שירותים (Censys)", censys))
+    body = "".join(f'<div class="data-row"><span class="data-key">{k}</span>'
+                   f'<div style="text-align:left">{v_}</div></div>' for k, v_ in sections)
+    st.markdown(f'<div class="card"><div class="card-label">שטח תקיפה וחשיפה</div>{body}</div>',
+                unsafe_allow_html=True)
+
+
+def build_summary(ip, v, infra, reports):
+    """Hebrew analyst narrative that cross-references all the evidence."""
+    p = []
+    loc = ", ".join(x for x in (infra["city"], infra["country"]) if x and x != "—")
+    org = infra["isp"] if infra["isp"] != "—" else infra["org"]
+    ident = f'הכתובת <b dir="ltr">{ip}</b> משויכת ל-<b>{org}</b>'
+    if infra["asn"] != "—":
+        ident += f' (AS{infra["asn"]})'
+    if loc:
+        ident += f' וממוקמת ב<b>{loc}</b>'
+    usage = infra["usage_type"]
+    if "Data Center" in usage or "Hosting" in usage:
+        ident += ". מדובר בתשתית חוות שרתים — דפוס שכיח בתשתיות תקיפה ובוטים"
+    ident += "."
+    p.append(ident)
+
+    if v.flagged:
+        items = " · ".join(f"<b>{name}</b> ({reason})" for name, reason, _ in v.flagged[:5])
+        cls = "bad" if v.level == "MALICIOUS" else "warn"
+        p.append(f'<span class="{cls}">🧩 <b>הצלבת מקורות:</b> מתוך {v.active} מקורות פעילים, '
+                 f'<b>{len(v.flagged)}</b> מסמנים סיכון: {items}.</span>')
     else:
-        with st.spinner("מבצע הצלבת נתונים מול מנועי מודיעין..."):
-            try:
-                results = run_full_scan(ip)
-                vt          = results["vt"]
-                abuse       = results["abuse"]
-                vpn         = results["vpn"]
-                ipqs        = results["ipqs"]
-                gn          = results["gn"]
-                censys_resp = results["censys"]
-                shodan_idb  = results["shodan"]
-                otx         = results["otx"]
-                proxycheck  = results["proxycheck"]
+        p.append(f'<span class="good">🧩 <b>הצלבת מקורות:</b> {v.active} מקורות פעילים נבדקו — '
+                 f'אף אחד מהם אינו מסמן את הכתובת כמסוכנת.</span>')
 
-                failed = [name.upper() for name, data in results.items() if not data]
-                active_sources = sum(1 for data in results.values() if data)
-                if failed:
-                    st.warning(f"⚠️ מקורות שלא החזירו נתונים (מפתח חסר / תקלה / מגבלת קריאות): {', '.join(failed)}")
+    masked = [ch for ch in v.masking.values() if ch.detected]
+    if masked:
+        det = " · ".join(f'<b>{ch.name}</b> ({len(ch.detected_by)}/{len(ch.detected_by) + len(ch.cleared_by)} מקורות)'
+                         for ch in masked)
+        p.append(f'<span class="warn">🕶️ <b>מיסוך:</b> זוהתה הסוואת זהות — {det}. '
+                 f'תעבורה מכתובת זו אינה משקפת את מקורה האמיתי.</span>')
 
-                # Shodan InternetDB — free, keyless: open ports + known CVEs + tags
-                shodan_ports = dget(shodan_idb, "ports", default=[])
-                shodan_ports = shodan_ports if isinstance(shodan_ports, list) else []
-                shodan_vulns = dget(shodan_idb, "vulns", default=[])
-                shodan_vulns = shodan_vulns if isinstance(shodan_vulns, list) else []
-                shodan_tags  = dget(shodan_idb, "tags", default=[])
-                shodan_tags  = shodan_tags if isinstance(shodan_tags, list) else []
+    shodan = reports.get("shodan")
+    if shodan and shodan.ok and shodan.context.get("vulns"):
+        p.append(f'<span class="bad">🛠️ <b>חשיפה:</b> {len(shodan.context["vulns"])} חולשות ידועות (CVE) '
+                 f'בשירותים החשופים של הכתובת.</span>')
 
-                # AlienVault OTX — number of threat pulses referencing this IP
-                otx_pulse_count = dget(otx, "pulse_info", "count", default=0) or 0
-                otx_pulses = dget(otx, "pulse_info", "pulses", default=[])
-                otx_pulses = otx_pulses if isinstance(otx_pulses, list) else []
-                otx_pulse_names = [dget(p, "name", default="") for p in otx_pulses[:3] if dget(p, "name", default="")]
+    concl = {
+        "MALICIOUS": ('bad', f'ההצלבה המשוקללת בין המקורות (ציון {v.score}/100, ביטחון {v.confidence}%) '
+                             'מבססת ודאות גבוהה לאיום — מומלצת חסימה מיידית ותחקור רטרואקטיבי של תעבורה קיימת.'),
+        "SUSPICIOUS": ('warn', f'קיימים אינדיקטורים חלקיים (ציון {v.score}/100, ביטחון {v.confidence}%). '
+                               'מומלץ ניטור, הצלבה מול לוגים פנימיים ובחינה חוזרת לפני הכרעה.'),
+        "CLEAN": ('good', f'הצלבת כלל המקורות (ציון {v.score}/100, ביטחון {v.confidence}%) אינה מציגה '
+                          'אינדיקטורים לפעילות זדונית — הכתובת מוגדרת נקייה נכון למועד הבדיקה.'),
+    }[v.level]
+    p.append(f'<span class="{concl[0]}"><b>מסקנה:</b> {concl[1]}</span>')
+    return "<br><br>".join(p)
 
-                # ProxyCheck.io — independent masking + risk (node keyed by the IP itself)
-                pc_ok   = dget(proxycheck, "status", default="") == "ok"
-                pc_node = as_dict(dget(proxycheck, ip, default={}))
-                pc_is_proxy = str(pc_node.get("proxy", "")).lower() == "yes"
-                pc_type = str(pc_node.get("type", "")).upper()
-                try:
-                    pc_risk = int(pc_node.get("risk", 0) or 0)
-                except (ValueError, TypeError):
-                    pc_risk = 0
 
-                # Censys Data Processing
-                services = dget(censys_resp, "result", "services", default=[])
-                if not isinstance(services, list):
-                    services = []
-                open_ports_count = len(services)
-                ports_list = [f"{dget(s, 'port', default='?')}/{dget(s, 'service_name', default='Unknown')}" for s in services]
-                ports_str = ", ".join(ports_list) if ports_list else "No Open Ports"
+def build_ticket_line(ip, v, infra, now_utc):
+    flags = " ".join(f"{name}:{risk:g}" for name, _, risk in v.flagged) or "none"
+    masked = "/".join(ch.name for ch in v.masking.values() if ch.detected) or "none"
+    return (f"[{v.level}] {ip} | score {v.score}/100 (confidence {v.confidence}%) | "
+            f"consensus {v.consensus:g} peak {v.peak:g} | flagged: {flags} | mask: {masked} | "
+            f"AS{infra['asn']} {infra['isp']} ({infra['country']}) | {now_utc}")
 
-                sec = as_dict(dget(vpn, "security", default={}))
 
-                # --- MASKING CONFLICT RESOLUTION ---
-                vpn_detected_by, vpn_not_detected_by = [], []
-                proxy_detected_by, proxy_not_detected_by = [], []
-                tor_detected_by, tor_not_detected_by = [], []
+# ─────────────────────────────────────────────────────────────
+#  SIDEBAR — source configuration & scan history
+# ─────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("### ⚙️ מקורות מודיעין")
+    st.caption("מקורות ללא מפתח מדולגים אוטומטית — האתר עובד גם בלעדיהם.")
+    for key, name, _, secret in SOURCE_CHECKS:
+        if secret is None:
+            st.markdown(f"🟢 **{name}** — ללא מפתח (חינמי)")
+        elif KEYS.get(secret):
+            st.markdown(f"🟢 **{name}** — מפתח מוגדר")
+        else:
+            st.markdown(f"⚪ **{name}** — חסר `{secret}`")
+    st.divider()
+    with st.expander("📐 איך מחושב ה-Verdict?"):
+        st.markdown("""
+1. כל מקור מחזיר **ציון סיכון מנורמל** (0-100) ומשקל אמינות.
+2. **קונצנזוס** = ממוצע משוקלל של כל חוות הדעת.
+3. **שיא** = הציון הבודד הגבוה ביותר (איום שאומת ע"י מקור סמכותי לא "נמהל").
+4. ציון סופי = ‎0.55×קונצנזוס + 0.45×שיא.
+5. **אימות צולב:** 2+ מקורות בסיכון גבוה ⇐ רצפה 70; 3+ ⇐ רצפה 85.
+6. **מיסוך מאומת** (VPN/Proxy/TOR) ⇐ רצפת חשד גם כשהמוניטין נקי.
+7. **רמת הביטחון** נגזרת מכיסוי המקורות וממידת ההסכמה ביניהם.
+""")
+    if st.session_state.get("history"):
+        st.divider()
+        st.markdown("### 🕓 היסטוריית בדיקות")
+        for h in reversed(st.session_state["history"][-8:]):
+            icon = {"CLEAN": "🟢", "SUSPICIOUS": "🟠", "MALICIOUS": "🔴"}[h["level"]]
+            st.markdown(f'{icon} `{h["ip"]}` — {h["score"]}/100 · {h["time"]}')
 
-                # VPNAPI.io
-                (vpn_detected_by if sec.get("vpn") else vpn_not_detected_by).append("VPNAPI")
-                (proxy_detected_by if sec.get("proxy") else proxy_not_detected_by).append("VPNAPI")
-                (tor_detected_by if sec.get("tor") else tor_not_detected_by).append("VPNAPI")
+# ─────────────────────────────────────────────────────────────
+#  HEADER
+# ─────────────────────────────────────────────────────────────
+now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+enabled_count = sum(1 for _, _, _, s in SOURCE_CHECKS if s is None or KEYS.get(s))
 
-                # IPQS
-                ipqs_ok = bool(dget(ipqs, "success", default=False))
-                if ipqs_ok:
-                    (vpn_detected_by if ipqs.get("vpn") or ipqs.get("active_vpn") else vpn_not_detected_by).append("IPQS")
-                    (proxy_detected_by if ipqs.get("proxy") or ipqs.get("active_tor") else proxy_not_detected_by).append("IPQS")
-                    (tor_detected_by if ipqs.get("tor") else tor_not_detected_by).append("IPQS")
+st.markdown(f"""<div class="app-header">
+<div class="brand">
+  <div class="brand-mark">🛡️</div>
+  <div>
+    <h1>SOC <b>Threat Analyzer</b></h1>
+    <div class="sub">IP / VPN INTELLIGENCE · AGGREGATED VERDICT ENGINE</div>
+  </div>
+</div>
+<div class="header-meta">
+  <div class="meta-chip"><span class="pulse"></span>{enabled_count}/{len(SOURCE_CHECKS)} מקורות פעילים</div>
+  <div class="meta-chip"><span class="mono">{now_utc}</span></div>
+</div>
+</div>""", unsafe_allow_html=True)
 
-                # ProxyCheck.io — third independent opinion on masking
-                if pc_ok:
-                    (vpn_detected_by if pc_is_proxy and pc_type == "VPN" else vpn_not_detected_by).append("ProxyCheck")
-                    (tor_detected_by if pc_type == "TOR" else tor_not_detected_by).append("ProxyCheck")
-                    # Any proxy flag that isn't specifically VPN/TOR counts as a generic proxy
-                    (proxy_detected_by if pc_is_proxy and pc_type not in ("VPN", "TOR") else proxy_not_detected_by).append("ProxyCheck")
+# ─────────────────────────────────────────────────────────────
+#  SEARCH
+# ─────────────────────────────────────────────────────────────
+_, mid, _ = st.columns([1, 2.2, 1])
+with mid:
+    with st.form("scan_form"):
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            raw_ip = st.text_input("IP", placeholder="הזן כתובת IP לתחקור — למשל 8.8.8.8",
+                                   label_visibility="collapsed")
+        with c2:
+            submitted = st.form_submit_button("🔍 חקור כתובת")
 
-                def format_conflict(m_type, detected, not_detected):
-                    if not detected:
-                        return None
-                    if not not_detected:
-                        return f"<strong style='color:#FF3333; font-size:1.1rem;'>{m_type}</strong>"
-                    return (f"<strong style='color:#FF3333; font-size:1.1rem;'>{m_type}</strong><br>"
-                            f"<span style='font-size:0.95rem; color:#FFA500;'>(זוהה: {', '.join(detected)} | לא זוהה: {', '.join(not_detected)})</span>")
+# ─────────────────────────────────────────────────────────────
+#  SCAN & RENDER
+# ─────────────────────────────────────────────────────────────
+target = raw_ip if submitted else st.query_params.get("ip", "")
 
-                masking_details = []
-                for m_type, det, not_det in [("VPN", vpn_detected_by, vpn_not_detected_by),
-                                             ("Proxy", proxy_detected_by, proxy_not_detected_by),
-                                             ("TOR", tor_detected_by, tor_not_detected_by)]:
-                    fmt = format_conflict(m_type, det, not_det)
-                    if fmt:
-                        masking_details.append(fmt)
+if target:
+    ip, err = validate_target(target)
+    if err:
+        st.error(f"⚠️ {err}")
+    else:
+        with st.spinner(f"מצליב את {ip} מול {enabled_count} מקורות מודיעין…"):
+            reports = cached_scan(ip, KEYS)
+            verdict = compute_verdict(reports)
+            infra = extract_infrastructure(reports, ip)
+            exposure = extract_exposure(reports)
 
-                masking_html = "<br><br>".join(masking_details) if masking_details else "None Detected"
-                masking = [m for m, det in [("VPN", vpn_detected_by), ("Proxy", proxy_detected_by), ("TOR", tor_detected_by)] if det]
+        # scan history (session)
+        st.session_state.setdefault("history", [])
+        if not st.session_state["history"] or st.session_state["history"][-1]["ip"] != ip:
+            st.session_state["history"].append(
+                {"ip": ip, "score": verdict.score, "level": verdict.level,
+                 "time": datetime.now(timezone.utc).strftime("%H:%M")})
 
-                vt_stats = as_dict(dget(vt, "data", "attributes", "last_analysis_stats", default={}))
-                mal_engines = dget(vt_stats, "malicious", default=0)
-                abuse_score = dget(abuse, "data", "abuseConfidenceScore", default=0)
-                total_reports = dget(abuse, "data", "totalReports", default=0)
-                fraud_score = dget(ipqs, "fraud_score", default=0) if ipqs_ok else 0
-                fraud_val_ui = fraud_score if ipqs_ok else "ERR"
+        failed = [r.name for r in reports.values() if r.enabled and not r.ok]
+        if failed:
+            st.warning(f"⚠️ מקורות שלא החזירו נתונים (תקלה / מכסה): {', '.join(failed)} — "
+                       f"ה-Verdict חושב על בסיס {verdict.active} המקורות שהשיבו.")
 
-                overall_score = max(abuse_score, fraud_score, pc_risk,
-                                    min(mal_engines * 20, 100),
-                                    min(otx_pulse_count * 20, 100),
-                                    min(len(shodan_vulns) * 15, 100))
+        render_verdict_hero(verdict)
 
-                provider = (dget(vpn, "network", "autonomous_system_organization")
-                            or dget(abuse, "data", "isp", default="Unknown"))
-                country = dget(vpn, "location", "country", default="Unknown")
-                city = dget(vpn, "location", "city", default="")
-                asn = dget(vpn, "network", "autonomous_system_number", default="N/A")
-                usage_type = dget(abuse, "data", "usageType", default="Unknown")
+        st.markdown('<div class="section-title">// source intelligence matrix //</div>',
+                    unsafe_allow_html=True)
+        render_source_matrix(reports)
 
-                # Verdict logic
-                if mal_engines > 2 or abuse_score > 80 or fraud_score > 80 or otx_pulse_count > 3 or pc_risk >= 66:
-                    status, label, color_class = "MALICIOUS", "איום מזוהה - חסימה מומלצת", "danger"
-                elif mal_engines > 0 or abuse_score > 25 or masking or otx_pulse_count > 0 or shodan_vulns:
-                    status, label, color_class = "SUSPICIOUS", "חשוד - נדרשת בחינה מעמיקה", "warning"
-                else:
-                    status, label, color_class = "CLEAN", "כתובת נקייה - לא נמצאו אינדיקטורים", "safe"
+        col_mask, col_infra = st.columns([1.15, 1])
+        with col_mask:
+            render_masking(verdict)
+        with col_infra:
+            render_infrastructure(infra)
+            render_exposure(exposure)
 
-                # ─── SOC SOURCE-CONSENSUS STRIP (every source at a glance) ───
-                gn_class = dget(gn, "classification", default="")
-                gn_short = gn_class if gn_class else ("noise" if dget(gn, "noise", default=False) else "")
-                vpnapi_flag = bool(sec.get("vpn") or sec.get("proxy") or sec.get("tor"))
-                source_rows = [
-                    ("VirusTotal", src_state(bool(vt), mal_engines > 0), mal_engines),
-                    ("AbuseIPDB", src_state(bool(abuse), abuse_score > 25), f"{abuse_score}%"),
-                    ("IPQS", src_state(ipqs_ok, fraud_score > 75), fraud_score if ipqs_ok else "—"),
-                    ("GreyNoise", src_state(bool(gn), gn_class == "malicious"), gn_short),
-                    ("VPNAPI", src_state(bool(vpn), vpnapi_flag), "VPN" if vpnapi_flag else ""),
-                    ("Censys", src_state(bool(censys_resp), open_ports_count > 5), open_ports_count),
-                    ("Shodan", src_state(bool(shodan_idb), len(shodan_vulns) > 0), f"{len(shodan_vulns)} CVE"),
-                    ("OTX", src_state(bool(otx), otx_pulse_count > 0), otx_pulse_count),
-                    ("ProxyCheck", src_state(pc_ok, pc_risk >= 66), pc_risk if pc_ok else "—"),
-                ]
-                st.markdown(build_source_strip(source_rows), unsafe_allow_html=True)
+        st.markdown('<div class="section-title">// analyst summary //</div>',
+                    unsafe_allow_html=True)
+        st.markdown(f'<div class="summary">{build_summary(ip, verdict, infra, reports)}</div>',
+                    unsafe_allow_html=True)
 
-                # ─── ANALYST COPY-LINE (ticket-ready IOC one-liner, has built-in copy button) ───
-                ticket_line = (
-                    f"[{status}] {ip} | score {overall_score} | "
-                    f"VT:{mal_engines} Abuse:{abuse_score} IPQS:{fraud_score} "
-                    f"OTX:{otx_pulse_count} PC:{pc_risk} CVE:{len(shodan_vulns)} | "
-                    f"mask:{'/'.join(masking) if masking else 'none'} | "
-                    f"{provider} ({country}) | {now}"
-                )
-                st.code(ticket_line, language=None)
+        st.markdown('<div class="section-title">// export //</div>', unsafe_allow_html=True)
+        st.code(build_ticket_line(ip, verdict, infra, now_utc), language=None)
+        export = {
+            "target": ip, "scanned_at": now_utc,
+            "verdict": {"level": verdict.level, "score": verdict.score,
+                        "confidence": verdict.confidence, "consensus": verdict.consensus,
+                        "peak": verdict.peak, "peak_source": verdict.peak_source,
+                        "floors": verdict.floors,
+                        "masking": {k: {"state": ch.state, "detected_by": ch.detected_by,
+                                        "cleared_by": ch.cleared_by}
+                                    for k, ch in verdict.masking.items()}},
+            "infrastructure": infra,
+            "exposure": exposure,
+            "sources": {k: asdict(r) for k, r in reports.items()},
+        }
+        st.download_button("⬇️ ייצוא דוח JSON מלא (לטיקט / SIEM)",
+                           data=json.dumps(export, ensure_ascii=False, indent=2),
+                           file_name=f"threat-report-{ip}.json", mime="application/json")
+else:
+    st.markdown("""<div style="text-align:center; padding:3rem 1rem; color:var(--ink-3)">
+<div style="font-size:2.6rem; margin-bottom:0.8rem">🛰️</div>
+<div style="font-size:1.05rem; color:var(--ink-2); font-weight:600">הזן כתובת IP כדי להתחיל תחקור</div>
+<div style="font-size:0.85rem; margin-top:0.5rem">
+המערכת מצליבה במקביל עד 10 מקורות מודיעין — VirusTotal, AbuseIPDB, IPQS, GreyNoise,
+VPNAPI, ProxyCheck, OTX, Shodan, Censys, IP-API — ומחשבת Verdict משוקלל אחד.
+</div></div>""", unsafe_allow_html=True)
 
-                # ─── UI LAYOUT ───
-                col_verdict, col_info = st.columns([1.2, 2])
-
-                with col_verdict:
-                    st.markdown(f"""
-                        <div class="card verdict-card verdict-glow-{color_class}">
-                            <div class="card-label">final verdict</div>
-                            <div class="verdict-title" style="color:var(--{color_class})">{status}</div>
-                            <div style="font-size:1.1rem; font-weight:600; opacity:0.8; margin-bottom:1.5rem;">{label}</div>
-                            <div class="metrics-grid">
-                                <div class="metric-item">
-                                    <div class="metric-val" style="color:var(--danger)">{mal_engines}</div>
-                                    <div class="metric-label">VT Malicious</div>
-                                </div>
-                                <div class="metric-item">
-                                    <div class="metric-val" style="color:var(--warning)">{total_reports}</div>
-                                    <div class="metric-label">Reports</div>
-                                </div>
-                                <div class="metric-item">
-                                    <div class="metric-val" style="color:var(--accent-cyan)">{fraud_val_ui}</div>
-                                    <div class="metric-label">Fraud Score</div>
-                                </div>
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    st.markdown("<div style='text-align:center; font-weight:bold; color:var(--text-main); margin-bottom:-20px; font-size:1.1rem;'>Overall Threat Score</div>", unsafe_allow_html=True)
-                    st.plotly_chart(create_gauge(overall_score), width="stretch")
-
-                with col_info:
-                    st.markdown(f"""
-                        <div class="card">
-                            <div class="card-label">infrastructure attributes</div>
-                            <div class="data-row"><span class="data-key">IP Address</span><span class="data-val accent-val">{ip}</span></div>
-                            <div class="data-row"><span class="data-key">ISP / Organization</span><span class="data-val">{provider}</span></div>
-                            <div class="data-row"><span class="data-key">Geo Location</span><span class="data-val">{city}, {country}</span></div>
-                            <div class="data-row"><span class="data-key">ASN</span><span class="data-val">AS{asn}</span></div>
-                            <div class="data-row"><span class="data-key">Connection Type</span><span class="data-val">{usage_type}</span></div>
-                            <div class="data-row" style="flex-direction: column; align-items: flex-start;">
-                                <span class="data-key" style="margin-bottom: 5px;">Masking (VPN/Proxy)</span>
-                                <span class="data-val" dir="auto" style="font-size:0.85rem; line-height: 1.4; color:{'#FF3333' if masking else '#00FF88'}; width: 100%; text-align: left;">{masking_html}</span>
-                            </div>
-                        </div>
-                        <div class="intel-summary" dir="rtl" style="text-align: right;">
-                            <strong>Summary:</strong><br>
-                            {generate_intel_summary({
-                                "ip": ip, "provider": provider, "country": country, "city": city,
-                                "asn": asn, "usage_type": usage_type, "masking": masking,
-                                "mal_engines": mal_engines, "abuse_score": abuse_score,
-                                "total_reports": total_reports, "fraud_score": fraud_score,
-                                "ipqs_ok": ipqs_ok, "ipqs": ipqs, "gn": gn,
-                                "open_ports_count": open_ports_count,
-                                "otx_pulse_count": otx_pulse_count, "otx_pulse_names": otx_pulse_names,
-                                "pc_ok": pc_ok, "pc_risk": pc_risk,
-                                "shodan_vulns": shodan_vulns, "shodan_tags": shodan_tags,
-                                "active_sources": active_sources, "status": status,
-                            })}
-                        </div>
-                    """, unsafe_allow_html=True)
-
-                # ─── EXTENDED INTEL ───
-                st.markdown('<div style="margin: 2rem 0 1rem; font-family:Inter; font-size:0.8rem; letter-spacing:4px; opacity:0.4; text-transform:uppercase; text-align:center;">// extended intelligence feeds //</div>', unsafe_allow_html=True)
-
-                c1, c2, c3, c4 = st.columns(4)
-
-                with c1:
-                    gn_status = dget(gn, "classification", default="No Data") if gn else "No Data"
-                    gn_color = "#FF3333" if gn_status == "malicious" else "#00FF88" if gn_status == "benign" else "#FF9900"
-                    st.markdown(f"""
-                        <div class="card">
-                            <div class="card-label">GreyNoise Feed</div>
-                            <div style="text-align:center; padding:1rem 0;">
-                                <div style="font-size:1.2rem; font-weight:800; color:{gn_color}; text-transform:uppercase;">{gn_status}</div>
-                                <div style="font-size:0.8rem; color:var(--text-muted); margin-top:5px;">Community Intelligence</div>
-                            </div>
-                            <div class="data-row"><span class="data-key">Noise Detected</span><span class="data-val">{'Yes' if dget(gn, 'noise', default=False) else 'No'}</span></div>
-                            <div class="data-row"><span class="data-key">Common Scanner</span><span class="data-val">{'Yes' if dget(gn, 'riot', default=False) else 'No'}</span></div>
-                        </div>
-                    """, unsafe_allow_html=True)
-
-                with c2:
-                    if not IPQS_KEY:
-                        ipqs_display = "<div style='font-size:1.2rem; font-weight:800; color:#FFA500; margin-top:10px;'>API Key Missing</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Please add to secrets.toml</div>"
-                    elif not ipqs_ok:
-                        err_msg = dget(ipqs, "message", default="API Error")
-                        ipqs_display = f"<div style='font-size:1rem; font-weight:600; color:#FF3333; margin-top:10px;'>{err_msg}</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>API Failure</div>"
-                    else:
-                        ipqs_display = f"<div style='font-size:2rem; font-weight:800; color:{'#FF3333' if fraud_score > 75 else '#00FF88'}'>{fraud_score}</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Fraud Probability</div>"
-
-                    st.markdown(f"""
-                        <div class="card">
-                            <div class="card-label">IPQualityScore</div>
-                            <div style="text-align:center; padding:1rem 0;">
-                                {ipqs_display}
-                            </div>
-                            <div class="data-row"><span class="data-key">Bot Status</span><span class="data-val">{'Detected' if dget(ipqs, 'bot_status', default=False) else 'Clear'}</span></div>
-                            <div class="data-row"><span class="data-key">Recent Abuse</span><span class="data-val">{'Yes' if dget(ipqs, 'recent_abuse', default=False) else 'No'}</span></div>
-                        </div>
-                    """, unsafe_allow_html=True)
-
-                with c3:
-                    st.markdown(f"""
-                        <div class="card">
-                            <div class="card-label">Quick Pivots</div>
-                            <div style="display:grid; grid-template-columns:1fr; gap:0.8rem;">
-                                <a href="https://www.virustotal.com/gui/ip-address/{ip}" target="_blank" style="text-decoration:none; background:rgba(0,119,255,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(0,119,255,0.3);">VirusTotal Report</a>
-                                <a href="https://www.abuseipdb.com/check/{ip}" target="_blank" style="text-decoration:none; background:rgba(255,51,51,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(255,51,51,0.3);">AbuseIPDB Profile</a>
-                                <a href="https://viz.greynoise.io/ip/{ip}" target="_blank" style="text-decoration:none; background:rgba(0,255,136,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(0,255,136,0.3);">GreyNoise Visualizer</a>
-                                <a href="https://www.ipqualityscore.com/free-ip-lookup-proxy-vpn-test/lookup/{ip}" target="_blank" style="text-decoration:none; background:rgba(255,165,0,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(255,165,0,0.3);">IPQualityScore</a>
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-
-                with c4:
-                    st.markdown(f"""
-                        <div class="card">
-                            <div class="card-label">Censys Data</div>
-                            <div style="text-align:center; padding:1rem 0;">
-                                <div style="font-size:2rem; font-weight:800; color:var(--accent-cyan)">{open_ports_count}</div>
-                                <div style="font-size:0.8rem; color:var(--text-muted); margin-top:5px;">Open Ports</div>
-                            </div>
-                            <div class="data-row" style="flex-direction: column; align-items: flex-start; border-bottom: none;">
-                                <span class="data-key" style="margin-bottom: 5px;">Services</span>
-                                <div style="max-height: 80px; overflow-y: auto; width: 100%;">
-                                    <span class="data-val" style="font-size:0.85rem; line-height: 1.4;">{ports_str}</span>
-                                </div>
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-
-                # ─── SECOND ROW: newly added free feeds ───
-                d1, d2, d3, d4 = st.columns(4)
-
-                with d1:
-                    if not OTX_API_KEY:
-                        otx_display = "<div style='font-size:1.2rem; font-weight:800; color:#FFA500; margin-top:10px;'>API Key Missing</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Add OTX_API_KEY to secrets</div>"
-                    else:
-                        otx_color = "#FF3333" if otx_pulse_count > 3 else "#FF9900" if otx_pulse_count > 0 else "#00FF88"
-                        otx_display = f"<div style='font-size:2rem; font-weight:800; color:{otx_color}'>{otx_pulse_count}</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Threat Pulses</div>"
-                    otx_top = otx_pulse_names[0] if otx_pulse_names else "—"
-                    st.markdown(f"""
-                        <div class="card">
-                            <div class="card-label">AlienVault OTX</div>
-                            <div style="text-align:center; padding:1rem 0;">
-                                {otx_display}
-                            </div>
-                            <div class="data-row" style="flex-direction: column; align-items: flex-start; border-bottom:none;">
-                                <span class="data-key" style="margin-bottom: 5px;">Latest Pulse</span>
-                                <span class="data-val" dir="auto" style="font-size:0.8rem; line-height:1.4; text-align:left; width:100%;">{otx_top}</span>
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-
-                with d2:
-                    if not pc_ok:
-                        pc_display = "<div style='font-size:1.2rem; font-weight:800; color:#FFA500; margin-top:10px;'>No Data</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Keyless — rate-limited or private IP</div>"
-                    else:
-                        pc_color = "#FF3333" if pc_risk >= 66 else "#FF9900" if pc_risk >= 34 else "#00FF88"
-                        pc_display = f"<div style='font-size:2rem; font-weight:800; color:{pc_color}'>{pc_risk}</div><div style='font-size:0.8rem; color:var(--text-muted); margin-top:5px;'>Risk Score</div>"
-                    st.markdown(f"""
-                        <div class="card">
-                            <div class="card-label">ProxyCheck.io</div>
-                            <div style="text-align:center; padding:1rem 0;">
-                                {pc_display}
-                            </div>
-                            <div class="data-row"><span class="data-key">Proxy / VPN</span><span class="data-val">{'Yes' if pc_is_proxy else 'No'}</span></div>
-                            <div class="data-row"><span class="data-key">Type</span><span class="data-val">{pc_type or '—'}</span></div>
-                        </div>
-                    """, unsafe_allow_html=True)
-
-                with d3:
-                    vuln_color = "#FF3333" if shodan_vulns else "#00FF88"
-                    vuln_preview = ", ".join(shodan_vulns[:6]) if shodan_vulns else ("Tags: " + ", ".join(shodan_tags[:4]) if shodan_tags else "No known CVEs")
-                    st.markdown(f"""
-                        <div class="card">
-                            <div class="card-label">Shodan InternetDB</div>
-                            <div style="text-align:center; padding:1rem 0;">
-                                <div style="font-size:2rem; font-weight:800; color:{vuln_color}">{len(shodan_vulns)}</div>
-                                <div style="font-size:0.8rem; color:var(--text-muted); margin-top:5px;">Known CVEs</div>
-                            </div>
-                            <div class="data-row"><span class="data-key">Open Ports</span><span class="data-val">{len(shodan_ports)}</span></div>
-                            <div class="data-row" style="flex-direction: column; align-items: flex-start; border-bottom:none;">
-                                <span class="data-key" style="margin-bottom: 5px;">Details</span>
-                                <div style="max-height: 70px; overflow-y: auto; width: 100%;">
-                                    <span class="data-val" style="font-size:0.8rem; line-height:1.4;">{vuln_preview}</span>
-                                </div>
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-
-                with d4:
-                    st.markdown(f"""
-                        <div class="card">
-                            <div class="card-label">More Pivots</div>
-                            <div style="display:grid; grid-template-columns:1fr; gap:0.8rem;">
-                                <a href="https://otx.alienvault.com/indicator/ip/{ip}" target="_blank" style="text-decoration:none; background:rgba(0,229,255,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(0,229,255,0.3);">AlienVault OTX</a>
-                                <a href="https://proxycheck.io/threats/{ip}" target="_blank" style="text-decoration:none; background:rgba(255,153,0,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(255,153,0,0.3);">ProxyCheck Threats</a>
-                                <a href="https://www.shodan.io/host/{ip}" target="_blank" style="text-decoration:none; background:rgba(0,119,255,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(0,119,255,0.3);">Shodan Host</a>
-                                <a href="https://search.censys.io/hosts/{ip}" target="_blank" style="text-decoration:none; background:rgba(0,255,136,0.1); color:white; padding:10px; border-radius:8px; text-align:center; font-weight:600; border:1px solid rgba(0,255,136,0.3);">Censys Host</a>
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-
-            except Exception as e:
-                st.error(f"Error during scan: {type(e).__name__}: {e}")
-
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 #  FOOTER
-# ─────────────────────────────────────────────
-st.markdown("""
-    <div style="margin-top: 5rem; padding: 2rem; text-align: center; border-top: 1px solid rgba(255,255,255,0.05); color: #64748B;">
-        Gal IP-VPN Check Service &nbsp;•&nbsp; Enterprise Threat Intelligence Platform &nbsp;•&nbsp; v2.3
-    </div>
-""", unsafe_allow_html=True)
+# ─────────────────────────────────────────────────────────────
+st.markdown(f"""<div class="app-footer">
+SOC Threat Analyzer · Aggregated IP-VPN Intelligence · v3.0<br>
+<span style="font-size:0.72rem">התוצאות מבוססות על מקורות מודיעין חיצוניים ומיועדות לתמיכה בהחלטת אנליסט — לא תחליף לשיקול דעת.</span>
+</div>""", unsafe_allow_html=True)

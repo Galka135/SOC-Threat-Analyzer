@@ -1,4 +1,2 @@
-streamlit
-requests
-plotly
-streamlit-autorefresh
+streamlit>=1.37
+requests>=2.31
