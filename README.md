@@ -16,6 +16,8 @@
 | VPNAPI.io | זיהוי VPN / Proxy / TOR / Relay | `VPNAPI_KEY` |
 | ProxyCheck.io | חוות דעת שנייה על מיסוך + ציון סיכון | `PROXYCHECK_KEY` (עובד גם בלי) |
 | AlienVault OTX | דיווחי איום קהילתיים (Pulses) | `OTX_API_KEY` |
+| ThreatFox (abuse.ch) | האם ה-IP הוא IOC פעיל של malware / botnet-C2 | ללא מפתח (Auth-Key אופציונלי) |
+| CriminalIP | ציון סיכון inbound/outbound עצמאי + דגלי VPN/Proxy/TOR/Scanner | `CRIMINALIP_KEY` |
 | Shodan InternetDB | פורטים פתוחים, CVE, תיוגים | ללא מפתח |
 | Censys | שירותים חשופים | `CENSYS_PAT` |
 | IPinfo | גיאוגרפיה, ASN, rDNS; בטוקן Privacy — זיהוי VPN/Proxy/TOR/Hosting | `IPINFO_TOKEN` |
@@ -63,6 +65,8 @@ PROXYCHECK_KEY = "..."
 OTX_API_KEY = "..."
 CENSYS_PAT = "..."
 IPINFO_TOKEN = "..."
+CRIMINALIP_KEY = "..."
+THREATFOX_AUTH_KEY = "..."   # אופציונלי — ThreatFox עובד גם בלעדיו
 ```
 
 > IPinfo: הטוקן החינמי מספק גיאוגרפיה + ASN. זיהוי VPN/Proxy/TOR מגיע רק
