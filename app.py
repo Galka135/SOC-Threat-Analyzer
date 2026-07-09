@@ -34,14 +34,27 @@ SECRET_NAMES = ["VT_API_KEY", "ABUSE_API_KEY", "IPQS_KEY", "GREYNOISE_KEY",
                 "IPINFO_TOKEN"]
 
 
-def _secret(name):
-    try:
-        return st.secrets.get(name, "") or os.environ.get(name, "")
-    except Exception:  # no secrets.toml at all — fall back to env vars
-        return os.environ.get(name, "")
+def _secret(*names):
+    """First non-empty secret / env var among the accepted names for a key."""
+    for name in names:
+        try:
+            val = st.secrets.get(name, "")
+        except Exception:  # no secrets.toml at all — fall back to env vars
+            val = ""
+        val = val or os.environ.get(name, "")
+        if val:
+            return val
+    return ""
 
 
-KEYS = {name: _secret(name) for name in SECRET_NAMES}
+# Some secrets are commonly stored under different names — accept any of them
+# so an existing key configured before this integration still works.
+SECRET_ALIASES = {
+    "IPINFO_TOKEN": ["IPINFO_TOKEN", "IPINFO_API_KEY", "IPINFO_KEY",
+                     "IPINFO_ACCESS_TOKEN", "IPINFO"],
+}
+
+KEYS = {name: _secret(*SECRET_ALIASES.get(name, [name])) for name in SECRET_NAMES}
 
 # ─────────────────────────────────────────────────────────────
 #  DESIGN SYSTEM
