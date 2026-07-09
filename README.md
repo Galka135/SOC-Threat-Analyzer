@@ -18,6 +18,7 @@
 | AlienVault OTX | דיווחי איום קהילתיים (Pulses) | `OTX_API_KEY` |
 | Shodan InternetDB | פורטים פתוחים, CVE, תיוגים | ללא מפתח |
 | Censys | שירותים חשופים | `CENSYS_PAT` |
+| IPinfo | גיאוגרפיה, ASN, rDNS; בטוקן Privacy — זיהוי VPN/Proxy/TOR/Hosting | `IPINFO_TOKEN` |
 | IP-API | גיאוגרפיה, ASN, rDNS, דגלי Proxy/Hosting | ללא מפתח |
 
 **כל המפתחות אופציונליים.** מקור ללא מפתח פשוט מדולג ומסומן ככבוי ב-UI —
@@ -61,7 +62,12 @@ VPNAPI_KEY = "..."
 PROXYCHECK_KEY = "..."
 OTX_API_KEY = "..."
 CENSYS_PAT = "..."
+IPINFO_TOKEN = "..."
 ```
+
+> IPinfo: הטוקן החינמי מספק גיאוגרפיה + ASN. זיהוי VPN/Proxy/TOR מגיע רק
+> בטוקן עם הרשאת **Privacy Detection** — הקוד מזהה אוטומטית איזה מסלול פעיל
+> ומשתמש במה שזמין.
 
 ## מבנה הקוד
 
