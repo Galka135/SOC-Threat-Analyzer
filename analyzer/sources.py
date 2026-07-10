@@ -368,26 +368,59 @@ def check_shodan_idb(ip, _api_key=None):
 
 
 def check_censys(ip, pat):
+    """Supports both Censys credential formats:
+      • Censys Platform (current): "ORG_ID:PAT" — org id is numeric — Bearer
+        auth + organization_id query param against api.platform.censys.io.
+        A bare PAT (no org id) is also tried, but the Platform API normally
+        requires the org id and will answer with a clear auth error otherwise.
+      • Legacy Search API: "API_ID:API_SECRET" — the id is a UUID — HTTP Basic
+        auth against search.censys.io/api/v2.
+    """
     rep = SourceReport("censys", "Censys", weight=0.5,
-                       link=f"https://search.censys.io/hosts/{ip}")
+                       link=f"https://platform.censys.io/hosts/{ip}")
     if not pat:
         rep.enabled = False
         rep.error = "אין מפתח API"
         return rep
+
+    org_id, token, legacy = None, pat.strip(), False
     if ":" in pat:
+        left, right = pat.split(":", 1)
+        if left.strip().isdigit():          # numeric left → Platform org id
+            org_id, token = left.strip(), right.strip()
+        else:                                # UUID left → legacy id:secret
+            legacy = True
+
+    if legacy:
         uid, secret = pat.split(":", 1)
-        status, data = _get(f"https://search.censys.io/api/v2/hosts/{ip}", auth=(uid, secret))
-    else:
         status, data = _get(f"https://search.censys.io/api/v2/hosts/{ip}",
-                            headers={"Authorization": f"Bearer {pat}"})
+                            auth=(uid.strip(), secret.strip()))
+    else:
+        params = {"organization_id": org_id} if org_id else None
+        status, data = _get(f"https://api.platform.censys.io/v3/global/asset/host/{ip}",
+                            headers={"Authorization": f"Bearer {token}",
+                                     "Accept": "application/json"},
+                            params=params)
+
     if status != 200:
-        rep.error = _dget(data, "error", default=f"HTTP {status}")
+        msg = (_dget(data, "error", default=None) or _dget(data, "message", default=None)
+               or _dget(data, "error", "message", default=None))
+        if status in (401, 403) and not org_id and not legacy:
+            msg = "נדרש Organization ID — הוסף CENSYS_ORG_ID ל-secrets"
+        rep.error = msg or f"HTTP {status}"
         return rep
 
-    services = _dget(data, "result", "services", default=[]) or []
+    # Legacy nests services under result.services; Platform under
+    # result.resource.services — accept either so both formats parse.
+    services = (_dget(data, "result", "resource", "services", default=None)
+                or _dget(data, "result", "services", default=None)
+                or _dget(data, "resource", "services", default=None)
+                or (data.get("services") if isinstance(data, dict) else None)
+                or [])
     if not isinstance(services, list):
         services = []
-    ports = [f"{s.get('port', '?')}/{s.get('service_name', '?')}"
+    ports = [f"{s.get('port', '?')}/"
+             f"{s.get('service_name') or s.get('protocol') or s.get('extended_service_name') or '?'}"
              for s in services if isinstance(s, dict)]
 
     rep.ok = True

@@ -31,7 +31,8 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────
 SECRET_NAMES = ["VT_API_KEY", "ABUSE_API_KEY", "IPQS_KEY", "GREYNOISE_KEY",
                 "VPNAPI_KEY", "PROXYCHECK_KEY", "OTX_API_KEY", "CENSYS_PAT",
-                "IPINFO_TOKEN", "CRIMINALIP_KEY", "THREATFOX_AUTH_KEY"]
+                "CENSYS_ORG_ID", "IPINFO_TOKEN", "CRIMINALIP_KEY",
+                "THREATFOX_AUTH_KEY"]
 
 
 def _secret(*names):
@@ -56,9 +57,20 @@ SECRET_ALIASES = {
                        "CRIMINALIP_TOKEN", "CRIMINALIP"],
     "THREATFOX_AUTH_KEY": ["THREATFOX_AUTH_KEY", "THREATFOX_KEY",
                            "THREATFOX_API_KEY", "ABUSECH_AUTH_KEY"],
+    "CENSYS_PAT": ["CENSYS_PAT", "CENSYS_API_KEY", "CENSYS_TOKEN",
+                   "CENSYS_PERSONAL_ACCESS_TOKEN"],
+    "CENSYS_ORG_ID": ["CENSYS_ORG_ID", "CENSYS_ORGANIZATION_ID", "CENSYS_ORG"],
 }
 
 KEYS = {name: _secret(*SECRET_ALIASES.get(name, [name])) for name in SECRET_NAMES}
+
+# Censys Platform (the current API) needs an Organization ID alongside the
+# Personal Access Token. The one-secret-per-source plumbing carries a single
+# string, so fold a separately-configured org id into the credential as
+# "ORG_ID:PAT" (org ids are numeric — check_censys tells this apart from the
+# legacy "API_ID:API_SECRET" form, where the id is a UUID).
+if KEYS.get("CENSYS_ORG_ID") and KEYS.get("CENSYS_PAT") and ":" not in KEYS["CENSYS_PAT"]:
+    KEYS["CENSYS_PAT"] = f'{KEYS["CENSYS_ORG_ID"]}:{KEYS["CENSYS_PAT"]}'
 
 # ─────────────────────────────────────────────────────────────
 #  DESIGN SYSTEM
