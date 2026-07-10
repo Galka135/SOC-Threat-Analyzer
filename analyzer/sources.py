@@ -405,8 +405,10 @@ def check_censys(ip, pat):
     if status != 200:
         msg = (_dget(data, "error", default=None) or _dget(data, "message", default=None)
                or _dget(data, "error", "message", default=None))
-        if status in (401, 403) and not org_id and not legacy:
-            msg = "נדרש Organization ID — הוסף CENSYS_ORG_ID ל-secrets"
+        if status in (401, 403) and not legacy:
+            # Free accounts need no org id; a failure here means a bad/partial PAT.
+            msg = ("אימות נכשל — ודא שה-PAT הועתק במלואו "
+                   "(חשבון חינמי אינו דורש Organization ID)")
         rep.error = msg or f"HTTP {status}"
         return rep
 
