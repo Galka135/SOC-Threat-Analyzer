@@ -23,6 +23,12 @@ import requests
 
 REQUEST_TIMEOUT = 10  # seconds per external call
 
+# AlienVault OTX's /general endpoint aggregates many sections (pulses, reputation,
+# passive DNS, malware…) so it is markedly slower than the other feeds. Give it a
+# longer per-attempt budget plus one retry for transient slowness.
+OTX_TIMEOUT = 12
+OTX_ATTEMPTS = 2
+
 
 @dataclass
 class SourceReport:
@@ -44,10 +50,10 @@ class SourceReport:
     link: str = ""
 
 
-def _get(url, headers=None, params=None, auth=None):
+def _get(url, headers=None, params=None, auth=None, timeout=REQUEST_TIMEOUT):
     """GET → (status_code, dict). Raises on network errors only."""
     r = requests.get(url, headers=headers, params=params, auth=auth,
-                     timeout=REQUEST_TIMEOUT)
+                     timeout=timeout)
     try:
         data = r.json()
     except ValueError:
@@ -289,8 +295,20 @@ def check_otx(ip, api_key):
         rep.enabled = False
         rep.error = "אין מפתח API"
         return rep
-    status, data = _get(f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
-                        headers={"X-OTX-API-KEY": api_key})
+    url = f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general"
+    status, data = 0, {}
+    for attempt in range(OTX_ATTEMPTS):
+        try:
+            status, data = _get(url, headers={"X-OTX-API-KEY": api_key}, timeout=OTX_TIMEOUT)
+            break
+        except requests.Timeout:
+            if attempt + 1 < OTX_ATTEMPTS:
+                continue  # transient slowness — try once more
+            rep.error = f"המקור לא הגיב בזמן (timeout ‏{OTX_TIMEOUT}ש׳ ×{OTX_ATTEMPTS})"
+            return rep
+        except requests.RequestException as exc:
+            rep.error = f"תקלת רשת: {type(exc).__name__}"
+            return rep
     if status != 200:
         rep.error = f"HTTP {status}"
         return rep
