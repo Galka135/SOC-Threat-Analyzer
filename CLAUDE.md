@@ -35,9 +35,10 @@ Four strictly separated layers:
 - `analyzer/verdict.py` — pure aggregation, no I/O. Consumes only
   `SourceReport` fields.
 - `analyzer/ai_summary.py` — optional AI analyst review over the verdict +
-  reports. One external call (Anthropic); like a source it never raises —
-  missing key / package / API error returns `AIReview(ok=False)` with a Hebrew
-  error. Consumes `SourceReport` + `Verdict` + infra/exposure dicts only.
+  reports. Tries an ordered provider chain (Gemini → Claude), one external call
+  to the first that answers; like a source it never raises — no key / package /
+  API error for every provider returns `AIReview(ok=False)` with a Hebrew error.
+  Consumes `SourceReport` + `Verdict` + infra/exposure dicts only.
 - `app.py` — Streamlit UI only. Renders via HTML-string builders +
   `st.markdown(unsafe_allow_html=True)`; no business logic.
 
@@ -74,11 +75,16 @@ score refinement** — enforced in code, never trusted to the model:
 - `temperature=0` for run-to-run stability; JSON is extracted tolerantly
   (`_extract_json`) so prose-wrapped output still parses.
 
-Both the deterministic and AI-adjusted scores are shown side by side and stored
-in the JSON export under `ai_review`. The layer is cached per `(ip, model)` via
-`cached_ai_review` (underscore-prefixed args carry the unhashable payload). To
-change bands/floor logic keep `ai_summary._band` in sync with `verdict` — it
-imports `MALICIOUS_AT` / `SUSPICIOUS_AT` from there rather than re-hardcoding.
+`review(...)` takes an ordered `providers=((name, model, key), …)` and tries
+each via `_PROVIDERS` (`gemini`→`_call_gemini`, `anthropic`→`_call_anthropic`)
+until one returns; each `_call_*` raises on failure so the loop falls through to
+the next. app.py builds the chain **Gemini-first, Claude-fallback** (only
+providers with a key), and it doubles as the cache key — `cached_ai_review` is
+keyed per `(ip, provider-chain)` (underscore-prefixed args carry the unhashable
+payload). `AIReview.provider` records who answered. Adding a provider = one
+`_call_*` fn + a `_PROVIDERS` entry. To change bands/floor logic keep
+`ai_summary._band` in sync with `verdict` — it imports `MALICIOUS_AT` /
+`SUSPICIOUS_AT` from there rather than re-hardcoding.
 
 ### Adding an intelligence source
 
