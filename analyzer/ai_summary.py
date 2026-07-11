@@ -29,16 +29,20 @@ from dataclasses import dataclass, field
 
 from analyzer.verdict import MALICIOUS_AT, SUSPICIOUS_AT, Verdict
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"          # free tier, tried first
+DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"   # fallback
 MAX_DELTA = 15          # AI may move the score at most this many points
 MAX_TOKENS = 1500
 REQUEST_TIMEOUT = 30    # seconds for the LLM call
+
+PROVIDER_LABEL = {"gemini": "Gemini", "anthropic": "Claude"}
 
 
 @dataclass
 class AIReview:
     ok: bool = False
     error: str = ""
+    provider: str = ""                              # which provider answered
     model: str = ""
     latency_ms: int = 0
 
@@ -164,40 +168,36 @@ def _refine(review: AIReview, raw_score, verdict: Verdict) -> None:
     review.delta = adjusted - baseline
 
 
-def review(ip, reports, verdict, infra, exposure,
-           api_key=None, model=DEFAULT_MODEL, timeout=REQUEST_TIMEOUT) -> AIReview:
-    """Run the AI analyst review. Never raises — failures return ok=False."""
-    out = AIReview(model=model, baseline_score=verdict.score,
-                   baseline_level=verdict.level, adjusted_score=verdict.score,
-                   adjusted_level=verdict.level)
-    if not api_key:
-        out.error = "אין מפתח API ל-AI (ANTHROPIC_API_KEY)"
-        return out
+def _call_gemini(system, user, api_key, model, timeout) -> str:
+    """One Gemini call → raw model text. Raises on any failure (caller falls back)."""
+    from google import genai
+    from google.genai import types
+    client = genai.Client(api_key=api_key,
+                          http_options=types.HttpOptions(timeout=int(timeout * 1000)))
+    resp = client.models.generate_content(
+        model=model, contents=user,
+        config=types.GenerateContentConfig(
+            system_instruction=system, temperature=0,
+            max_output_tokens=MAX_TOKENS, response_mime_type="application/json"),
+    )
+    return resp.text or ""
 
-    try:
-        from anthropic import Anthropic
-    except ImportError:
-        out.error = "חבילת anthropic אינה מותקנת בסביבה"
-        return out
 
-    payload = _evidence(ip, reports, verdict, infra, exposure)
-    start = time.monotonic()
-    try:
-        client = Anthropic(api_key=api_key, timeout=timeout)
-        resp = client.messages.create(
-            model=model, max_tokens=MAX_TOKENS, temperature=0, system=_SYSTEM,
-            messages=[{"role": "user",
-                       "content": "נתוני הבדיקה (JSON):\n"
-                       + json.dumps(payload, ensure_ascii=False)}],
-        )
-        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
-        data = _extract_json(text)
-    except Exception as exc:                        # network / API / parse — degrade quietly
-        out.latency_ms = int((time.monotonic() - start) * 1000)
-        out.error = f"תקלת AI: {type(exc).__name__}"
-        return out
+def _call_anthropic(system, user, api_key, model, timeout) -> str:
+    """One Anthropic call → raw model text. Raises on any failure (caller falls back)."""
+    from anthropic import Anthropic
+    client = Anthropic(api_key=api_key, timeout=timeout)
+    resp = client.messages.create(
+        model=model, max_tokens=MAX_TOKENS, temperature=0, system=system,
+        messages=[{"role": "user", "content": user}],
+    )
+    return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
 
-    out.latency_ms = int((time.monotonic() - start) * 1000)
+
+_PROVIDERS = {"gemini": _call_gemini, "anthropic": _call_anthropic}
+
+
+def _populate(out: AIReview, data: dict, verdict: Verdict) -> None:
     out.headline = str(data.get("headline", "")).strip()
     out.threat_type = str(data.get("threat_type", "")).strip()
     out.summary = str(data.get("summary", "")).strip()
@@ -207,4 +207,41 @@ def review(ip, reports, verdict, infra, exposure,
     out.adjustment_reason = str(data.get("adjustment_reason", "")).strip()
     _refine(out, data.get("adjusted_score", verdict.score), verdict)
     out.ok = True
+
+
+def review(ip, reports, verdict, infra, exposure,
+           providers=(), timeout=REQUEST_TIMEOUT) -> AIReview:
+    """Run the AI analyst review, trying each provider in order until one succeeds.
+
+    ``providers`` is an ordered iterable of ``(name, model, api_key)`` — the
+    intended order is Gemini-first (free tier), Claude as fallback. Never
+    raises: if every provider fails (or none is configured) it returns
+    ``ok=False`` with a Hebrew error and the panel simply hides.
+    """
+    out = AIReview(baseline_score=verdict.score, baseline_level=verdict.level,
+                   adjusted_score=verdict.score, adjusted_level=verdict.level)
+    usable = [(name, model, key) for name, model, key in providers
+              if key and name in _PROVIDERS]
+    if not usable:
+        out.error = "אין מפתח API ל-AI (הגדר GEMINI_API_KEY או ANTHROPIC_API_KEY)"
+        return out
+
+    payload = _evidence(ip, reports, verdict, infra, exposure)
+    user = "נתוני הבדיקה (JSON):\n" + json.dumps(payload, ensure_ascii=False)
+
+    errors = []
+    for name, model, key in usable:
+        start = time.monotonic()
+        try:
+            data = _extract_json(_PROVIDERS[name](_SYSTEM, user, key, model, timeout))
+        except Exception as exc:                    # this provider failed — try the next
+            errors.append(f"{PROVIDER_LABEL.get(name, name)}: {type(exc).__name__}")
+            continue
+        out.latency_ms = int((time.monotonic() - start) * 1000)
+        out.provider = PROVIDER_LABEL.get(name, name)
+        out.model = model
+        _populate(out, data, verdict)
+        return out
+
+    out.error = "כל ספקי ה-AI נכשלו — " + " · ".join(errors)
     return out
