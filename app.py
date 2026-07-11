@@ -12,12 +12,13 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
-from analyzer import compute_verdict, extract_exposure, extract_infrastructure, run_scan
+from analyzer import (ai_review, compute_verdict, extract_exposure,
+                      extract_infrastructure, run_scan)
 from analyzer.sources import OPTIONAL_KEY, SOURCE_CHECKS
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 #  PAGE CONFIG
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="SOC Threat Analyzer | IP-VPN Intelligence",
     page_icon="🛡️",
@@ -25,10 +26,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 #  API KEYS — all optional; sources without a key are skipped,
 #  never crash the app
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 SECRET_NAMES = ["VT_API_KEY", "ABUSE_API_KEY", "IPQS_KEY", "GREYNOISE_KEY",
                 "VPNAPI_KEY", "PROXYCHECK_KEY", "OTX_API_KEY", "CENSYS_PAT",
                 "CENSYS_ORG_ID", "IPINFO_TOKEN", "CRIMINALIP_KEY",
@@ -72,9 +73,17 @@ KEYS = {name: _secret(*SECRET_ALIASES.get(name, [name])) for name in SECRET_NAME
 if KEYS.get("CENSYS_ORG_ID") and KEYS.get("CENSYS_PAT") and ":" not in KEYS["CENSYS_PAT"]:
     KEYS["CENSYS_PAT"] = f'{KEYS["CENSYS_ORG_ID"]}:{KEYS["CENSYS_PAT"]}'
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
+#  AI ANALYST LAYER — optional; augments the deterministic verdict.
+#  Missing key simply hides the AI panel (never crashes), exactly
+#  like every intelligence source.
+# ────────────────────────────────────────────────────────────
+AI_KEY = _secret("ANTHROPIC_API_KEY", "ANTHROPIC_KEY", "CLAUDE_API_KEY", "ANTHROPIC")
+AI_MODEL = _secret("AI_MODEL", "ANTHROPIC_MODEL") or "claude-haiku-4-5-20251001"
+
+# ────────────────────────────────────────────────────────────
 #  DESIGN SYSTEM
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
@@ -255,6 +264,27 @@ h1, h2, h3, h4, p, span, div, label { font-family: 'Heebo', sans-serif; }
 .summary b { color: var(--ink); }
 .summary .good { color: var(--safe); } .summary .warn { color: var(--warn); } .summary .bad { color: var(--critical); }
 
+/* ── AI analyst card ── */
+.ai-card { border-width: 2px; }
+.ai-card.lvl-CLEAN { border-color: rgba(52, 211, 153, 0.4); }
+.ai-card.lvl-SUSPICIOUS { border-color: rgba(251, 191, 36, 0.4); }
+.ai-card.lvl-MALICIOUS { border-color: rgba(248, 113, 113, 0.45); }
+.ai-model { font-size: 0.62rem; color: var(--ink-3); letter-spacing: 0; text-transform: none; margin-right: auto; }
+.ai-headline { font-size: 1.15rem; font-weight: 800; line-height: 1.4; margin-bottom: 0.5rem; }
+.ai-meta { margin-bottom: 0.9rem; }
+.ai-chip { display: inline-block; font-size: 0.75rem; font-weight: 600; color: var(--accent); background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 3px 12px; }
+.ai-refine { display: flex; align-items: center; gap: 1.1rem; flex-wrap: wrap; background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: 12px; padding: 0.9rem 1.2rem; margin-bottom: 0.5rem; }
+.ai-score { display: flex; flex-direction: column; gap: 2px; }
+.ai-score .k { font-size: 0.68rem; color: var(--ink-3); font-weight: 600; }
+.ai-score .v { font-size: 1.7rem; font-weight: 700; line-height: 1; }
+.ai-arrow { font-size: 1.4rem; color: var(--ink-3); }
+.ai-delta { font-size: 0.78rem; font-weight: 700; margin-right: 6px; }
+.ai-delta.up { color: var(--critical); } .ai-delta.down { color: var(--safe); } .ai-delta.flat { color: var(--ink-3); }
+.ai-reason { font-size: 0.82rem; color: var(--ink-2); margin-bottom: 0.9rem; line-height: 1.6; }
+.ai-narrative { margin-top: 0.4rem; }
+.ai-list { margin: 0.4rem 1.2rem 0 0; padding: 0; }
+.ai-list li { margin-bottom: 0.35rem; }
+
 /* copy line LTR */
 [data-testid="stCode"] { direction: ltr; text-align: left; }
 .stDownloadButton button { background: var(--surface-2) !important; color: var(--ink-2) !important; border: 1px solid var(--border) !important; border-radius: 10px !important; font-weight: 600 !important; width: 100%; }
@@ -271,9 +301,9 @@ h1, h2, h3, h4, p, span, div, label { font-family: 'Heebo', sans-serif; }
 </style>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 #  HELPERS
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 BAND = {
     "CLEAN": "var(--safe)",
     "SUSPICIOUS": "var(--warn)",
@@ -310,6 +340,14 @@ def ring_svg(score, color):
 @st.cache_data(ttl=600, show_spinner=False)
 def cached_scan(ip, keys):
     return run_scan(ip, keys)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_ai_review(ip, model, key, _reports, _verdict, _infra, _exposure):
+    """Cache the AI review per (ip, model). Leading args are the cache key;
+    underscore-prefixed args carry the unhashable payload without being hashed."""
+    return ai_review(ip, _reports, _verdict, _infra, _exposure,
+                     api_key=key, model=model)
 
 
 def validate_target(raw):
@@ -492,6 +530,65 @@ def build_summary(ip, v, infra, reports):
     return "<br><br>".join(p)
 
 
+def _ai_refine_html(ai):
+    """The bounded score-refinement strip: deterministic anchor → AI suggestion."""
+    base_c, adj_c = BAND[ai.baseline_level], BAND[ai.adjusted_level]
+    if ai.delta > 0:
+        delta_html = f'<span class="ai-delta up">▲ +{ai.delta}</span>'
+    elif ai.delta < 0:
+        delta_html = f'<span class="ai-delta down">▼ {ai.delta}</span>'
+    else:
+        delta_html = '<span class="ai-delta flat">ללא שינוי</span>'
+    notes = []
+    if ai.adjustment_reason:
+        notes.append(ai.adjustment_reason)
+    if ai.floor_locked:
+        notes.append("רצפת בטיחות פעילה — ה-AI רשאי רק להעלות, לא להוריד את הציון.")
+    if ai.clamped:
+        notes.append("הצעת ה-AI חרגה מטווח החידוד המותר ורוסנה.")
+    note_html = f'<div class="ai-reason">{" · ".join(notes)}</div>' if notes else ""
+    return (
+        '<div class="ai-refine">'
+        f'<div class="ai-score"><span class="k">ניקוד דטרמיניסטי</span>'
+        f'<span class="v mono" style="color:{base_c}">{ai.baseline_score}</span></div>'
+        '<div class="ai-arrow">→</div>'
+        f'<div class="ai-score"><span class="k">חידוד אנליסט AI</span>'
+        f'<span class="v mono" style="color:{adj_c}">{ai.adjusted_score}</span>{delta_html}</div>'
+        f'</div>{note_html}'
+    )
+
+
+def _ai_narrative_html(ai):
+    parts = []
+    if ai.summary:
+        parts.append(ai.summary)
+    if ai.reasoning:
+        parts.append(f'<b>הנמקה:</b> {ai.reasoning}')
+    if ai.reconciliations:
+        items = "".join(f'<li>{r}</li>' for r in ai.reconciliations)
+        parts.append(f'<b>יישוב סתירות בין מקורות:</b><ul class="ai-list">{items}</ul>')
+    if ai.recommendations:
+        items = "".join(f'<li>{r}</li>' for r in ai.recommendations)
+        parts.append(f'<b>המלצות פעולה:</b><ol class="ai-list">{items}</ol>')
+    return "<br><br>".join(parts)
+
+
+def render_ai_review(ai):
+    color = BAND[ai.adjusted_level]
+    chip = f'<span class="ai-chip">{ai.threat_type}</span>' if ai.threat_type else ""
+    st.markdown(
+        f'<div class="card ai-card lvl-{ai.adjusted_level}">'
+        f'<div class="card-label">🤖 סקירת אנליסט AI'
+        f'<span class="ai-model mono">{ai.model}</span></div>'
+        f'<div class="ai-headline" style="color:{color}">{ai.headline}</div>'
+        f'<div class="ai-meta">{chip}</div>'
+        f'{_ai_refine_html(ai)}'
+        f'<div class="summary ai-narrative">{_ai_narrative_html(ai)}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def build_ticket_line(ip, v, infra, now_utc):
     flags = " ".join(f"{name}:{risk:g}" for name, _, risk in v.flagged) or "none"
     masked = "/".join(ch.name for ch in v.masking.values() if ch.detected) or "none"
@@ -500,9 +597,9 @@ def build_ticket_line(ip, v, infra, now_utc):
             f"AS{infra['asn']} {infra['isp']} ({infra['country']}) | {now_utc}")
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 #  SIDEBAR — source configuration & scan history
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚙️ מקורות מודיעין")
     st.caption("מקורות ללא מפתח מדולגים אוטומטית — האתר עובד גם בלעדיהם.")
@@ -515,6 +612,14 @@ with st.sidebar:
             st.markdown(f"🟢 **{name}** — חינמי (מפתח `{secret}` אופציונלי)")
         else:
             st.markdown(f"⚪ **{name}** — חסר `{secret}`")
+    st.divider()
+    st.markdown("### 🤖 שכבת AI")
+    if AI_KEY:
+        st.markdown(f"🟢 **אנליסט AI** — פעיל (`{AI_MODEL}`)")
+    else:
+        st.markdown("⚪ **אנליסט AI** — חסר `ANTHROPIC_API_KEY`")
+    st.caption("שכבת ה-AI מסכמת, מיישבת סתירות ומחדדת את הניקוד בטווח מוגבל — "
+               "מעל מנוע ה-Verdict הדטרמיניסטי, בלי להחליף אותו.")
     st.divider()
     with st.expander("📐 איך מחושב ה-Verdict?"):
         st.markdown("""
@@ -533,9 +638,9 @@ with st.sidebar:
             icon = {"CLEAN": "🟢", "SUSPICIOUS": "🟠", "MALICIOUS": "🔴"}[h["level"]]
             st.markdown(f'{icon} `{h["ip"]}` — {h["score"]}/100 · {h["time"]}')
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 #  HEADER
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 enabled_count = sum(1 for k, _, _, s in SOURCE_CHECKS
                     if s is None or KEYS.get(s) or k in OPTIONAL_KEY)
@@ -554,9 +659,9 @@ st.markdown(f"""<div class="app-header">
 </div>
 </div>""", unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 #  SEARCH
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 _, mid, _ = st.columns([1, 2.2, 1])
 with mid:
     with st.form("scan_form"):
@@ -567,9 +672,9 @@ with mid:
         with c2:
             submitted = st.form_submit_button("🔍 חקור כתובת")
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 #  SCAN & RENDER
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 target = raw_ip if submitted else st.query_params.get("ip", "")
 
 if target:
@@ -582,6 +687,12 @@ if target:
             verdict = compute_verdict(reports)
             infra = extract_infrastructure(reports, ip)
             exposure = extract_exposure(reports)
+
+        ai = None
+        if AI_KEY:
+            with st.spinner("מפעיל אנליסט AI לסקירת הממצאים…"):
+                ai = cached_ai_review(ip, AI_MODEL, AI_KEY,
+                                      reports, verdict, infra, exposure)
 
         # scan history (session)
         st.session_state.setdefault("history", [])
@@ -613,6 +724,13 @@ if target:
         st.markdown(f'<div class="summary">{build_summary(ip, verdict, infra, reports)}</div>',
                     unsafe_allow_html=True)
 
+        if ai and ai.ok:
+            st.markdown('<div class="section-title">// ai soc analyst //</div>',
+                        unsafe_allow_html=True)
+            render_ai_review(ai)
+        elif ai:
+            st.caption(f"🤖 סקירת ה-AI אינה זמינה כרגע — {ai.error}.")
+
         st.markdown('<div class="section-title">// export //</div>', unsafe_allow_html=True)
         st.code(build_ticket_line(ip, verdict, infra, now_utc), language=None)
         export = {
@@ -628,6 +746,17 @@ if target:
             "exposure": exposure,
             "sources": {k: asdict(r) for k, r in reports.items()},
         }
+        if ai and ai.ok:
+            export["ai_review"] = {
+                "model": ai.model, "headline": ai.headline,
+                "threat_type": ai.threat_type, "summary": ai.summary,
+                "reasoning": ai.reasoning, "reconciliations": ai.reconciliations,
+                "recommendations": ai.recommendations,
+                "baseline_score": ai.baseline_score, "adjusted_score": ai.adjusted_score,
+                "adjusted_level": ai.adjusted_level, "delta": ai.delta,
+                "adjustment_reason": ai.adjustment_reason,
+                "floor_locked": ai.floor_locked, "clamped": ai.clamped,
+            }
         st.download_button("⬇️ ייצוא דוח JSON מלא (לטיקט / SIEM)",
                            data=json.dumps(export, ensure_ascii=False, indent=2),
                            file_name=f"threat-report-{ip}.json", mime="application/json")
@@ -641,9 +770,9 @@ VPNAPI, ProxyCheck, OTX, ThreatFox, CriminalIP, Tor Project, SANS ISC, Blocklist
 StopForumSpam, Shodan, Censys, IPinfo, IP-API — ומחשבת Verdict משוקלל אחד.
 </div></div>""", unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 #  FOOTER
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
 st.markdown(f"""<div class="app-footer">
 SOC Threat Analyzer · Aggregated IP-VPN Intelligence · v3.0<br>
 <span style="font-size:0.72rem">התוצאות מבוססות על מקורות מודיעין חיצוניים ומיועדות לתמיכה בהחלטת אנליסט — לא תחליף לשיקול דעת.</span>
