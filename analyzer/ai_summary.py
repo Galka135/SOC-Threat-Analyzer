@@ -138,12 +138,15 @@ _SYSTEM = f"""אתה אנליסט SOC בכיר. אתה מקבל פלט של כ-1
 def _extract_json(text: str) -> dict:
     """Tolerant JSON extraction — the model is asked for pure JSON but may wrap it."""
     try:
-        return json.loads(text)
+        data = json.loads(text)
     except (ValueError, TypeError):
         match = re.search(r"\{.*\}", text or "", re.DOTALL)
         if not match:
             raise ValueError("no JSON object in model output")
-        return json.loads(match.group(0))
+        data = json.loads(match.group(0))
+    if not isinstance(data, dict):
+        raise ValueError("model output is not a JSON object")
+    return data
 
 
 def _refine(review: AIReview, raw_score, verdict: Verdict) -> None:
@@ -226,8 +229,14 @@ def review(ip, reports, verdict, infra, exposure,
         out.error = "אין מפתח API ל-AI (GEMINI_API_KEY / ANTHROPIC_API_KEY)"
         return out
 
-    payload = _evidence(ip, reports, verdict, infra, exposure)
-    user_msg = "נתוני הבדיקה (JSON):\n" + json.dumps(payload, ensure_ascii=False)
+    try:                        # never raise — a bad payload hides the panel, not the app
+        payload = _evidence(ip, reports, verdict, infra, exposure)
+        user_msg = ("נתוני הבדיקה (JSON):\n"
+                    + json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception as exc:
+        out.error = f"תקלת AI: {type(exc).__name__}"
+        return out
+
     start = time.monotonic()
     data, errors = None, []
     for name, used_model, call in providers:
