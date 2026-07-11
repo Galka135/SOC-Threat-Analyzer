@@ -78,6 +78,9 @@ if KEYS.get("CENSYS_ORG_ID") and KEYS.get("CENSYS_PAT") and ":" not in KEYS["CEN
 #  Missing key simply hides the AI panel (never crashes), exactly
 #  like every intelligence source.
 # ────────────────────────────────────────────────────────────
+# Gemini (free tier) is the primary provider; Claude is the paid fallback.
+GEMINI_KEY = _secret("GEMINI_API_KEY", "GEMINI_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_API_KEY")
+GEMINI_MODEL = _secret("GEMINI_MODEL") or "gemini-2.5-flash"
 AI_KEY = _secret("ANTHROPIC_API_KEY", "ANTHROPIC_KEY", "CLAUDE_API_KEY", "ANTHROPIC")
 AI_MODEL = _secret("AI_MODEL", "ANTHROPIC_MODEL") or "claude-haiku-4-5-20251001"
 
@@ -343,11 +346,13 @@ def cached_scan(ip, keys):
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def cached_ai_review(ip, model, key, _reports, _verdict, _infra, _exposure):
-    """Cache the AI review per (ip, model). Leading args are the cache key;
+def cached_ai_review(ip, model, key, gemini_model, gemini_key,
+                     _reports, _verdict, _infra, _exposure):
+    """Cache the AI review per (ip, models). Leading args are the cache key;
     underscore-prefixed args carry the unhashable payload without being hashed."""
     return ai_review(ip, _reports, _verdict, _infra, _exposure,
-                     api_key=key, model=model)
+                     api_key=key, model=model,
+                     gemini_api_key=gemini_key, gemini_model=gemini_model)
 
 
 def validate_target(raw):
@@ -614,10 +619,13 @@ with st.sidebar:
             st.markdown(f"⚪ **{name}** — חסר `{secret}`")
     st.divider()
     st.markdown("### 🤖 שכבת AI")
+    if GEMINI_KEY:
+        st.markdown(f"🟢 **Gemini** — ראשי, חינמי (`{GEMINI_MODEL}`)")
     if AI_KEY:
-        st.markdown(f"🟢 **אנליסט AI** — פעיל (`{AI_MODEL}`)")
-    else:
-        st.markdown("⚪ **אנליסט AI** — חסר `ANTHROPIC_API_KEY`")
+        role = "גיבוי" if GEMINI_KEY else "ראשי"
+        st.markdown(f"🟢 **Claude** — {role} (`{AI_MODEL}`)")
+    if not (GEMINI_KEY or AI_KEY):
+        st.markdown("⚪ **אנליסט AI** — חסר `GEMINI_API_KEY` / `ANTHROPIC_API_KEY`")
     st.caption("שכבת ה-AI מסכמת, מיישבת סתירות ומחדדת את הניקוד בטווח מוגבל — "
                "מעל מנוע ה-Verdict הדטרמיניסטי, בלי להחליף אותו.")
     st.divider()
@@ -689,9 +697,9 @@ if target:
             exposure = extract_exposure(reports)
 
         ai = None
-        if AI_KEY:
+        if AI_KEY or GEMINI_KEY:
             with st.spinner("מפעיל אנליסט AI לסקירת הממצאים…"):
-                ai = cached_ai_review(ip, AI_MODEL, AI_KEY,
+                ai = cached_ai_review(ip, AI_MODEL, AI_KEY, GEMINI_MODEL, GEMINI_KEY,
                                       reports, verdict, infra, exposure)
 
         # scan history (session)

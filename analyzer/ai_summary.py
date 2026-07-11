@@ -18,6 +18,10 @@ Reliability guardrails (enforced in code, not trusted to the model):
     address cleaner than the floor,
   * a missing key / package / API error never raises — like every source it
     degrades to ok=False with a Hebrew error and the panel simply hides.
+
+Providers: Gemini (free tier) is tried first when its key is configured;
+Claude is the paid fallback. Either key alone is enough — the review runs
+with whichever provider answers first, and `AIReview.model` records which.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from dataclasses import dataclass, field
 from analyzer.verdict import MALICIOUS_AT, SUSPICIOUS_AT, Verdict
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
 MAX_DELTA = 15          # AI may move the score at most this many points
 MAX_TOKENS = 1500
 REQUEST_TIMEOUT = 30    # seconds for the LLM call
@@ -164,40 +169,80 @@ def _refine(review: AIReview, raw_score, verdict: Verdict) -> None:
     review.delta = adjusted - baseline
 
 
+def _call_claude(user_msg: str, api_key: str, model: str, timeout: int) -> str:
+    from anthropic import Anthropic
+    client = Anthropic(api_key=api_key, timeout=timeout)
+    resp = client.messages.create(
+        model=model, max_tokens=MAX_TOKENS, temperature=0, system=_SYSTEM,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+    return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+
+
+def _call_gemini(user_msg: str, api_key: str, model: str, timeout: int) -> str:
+    import requests
+    resp = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        headers={"x-goog-api-key": api_key},
+        json={
+            "system_instruction": {"parts": [{"text": _SYSTEM}]},
+            "contents": [{"role": "user", "parts": [{"text": user_msg}]}],
+            "generationConfig": {
+                "temperature": 0,
+                "maxOutputTokens": MAX_TOKENS,
+                "responseMimeType": "application/json",
+                # thinking tokens count against maxOutputTokens on 2.5 models —
+                # disable them so the JSON answer is never truncated away
+                "thinkingConfig": {"thinkingBudget": 0},
+            },
+        },
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    parts = resp.json()["candidates"][0]["content"]["parts"]
+    return "".join(p.get("text", "") for p in parts)
+
+
 def review(ip, reports, verdict, infra, exposure,
-           api_key=None, model=DEFAULT_MODEL, timeout=REQUEST_TIMEOUT) -> AIReview:
-    """Run the AI analyst review. Never raises — failures return ok=False."""
-    out = AIReview(model=model, baseline_score=verdict.score,
+           api_key=None, model=DEFAULT_MODEL,
+           gemini_api_key=None, gemini_model=GEMINI_DEFAULT_MODEL,
+           timeout=REQUEST_TIMEOUT) -> AIReview:
+    """Run the AI analyst review. Never raises — failures return ok=False.
+
+    Gemini (free) is tried first when configured; Claude is the fallback.
+    """
+    out = AIReview(baseline_score=verdict.score,
                    baseline_level=verdict.level, adjusted_score=verdict.score,
                    adjusted_level=verdict.level)
-    if not api_key:
-        out.error = "אין מפתח API ל-AI (ANTHROPIC_API_KEY)"
-        return out
 
-    try:
-        from anthropic import Anthropic
-    except ImportError:
-        out.error = "חבילת anthropic אינה מותקנת בסביבה"
+    providers = []
+    if gemini_api_key:
+        providers.append(("Gemini", gemini_model,
+                          lambda msg: _call_gemini(msg, gemini_api_key, gemini_model, timeout)))
+    if api_key:
+        providers.append(("Claude", model,
+                          lambda msg: _call_claude(msg, api_key, model, timeout)))
+    if not providers:
+        out.error = "אין מפתח API ל-AI (GEMINI_API_KEY / ANTHROPIC_API_KEY)"
         return out
 
     payload = _evidence(ip, reports, verdict, infra, exposure)
+    user_msg = "נתוני הבדיקה (JSON):\n" + json.dumps(payload, ensure_ascii=False)
     start = time.monotonic()
-    try:
-        client = Anthropic(api_key=api_key, timeout=timeout)
-        resp = client.messages.create(
-            model=model, max_tokens=MAX_TOKENS, temperature=0, system=_SYSTEM,
-            messages=[{"role": "user",
-                       "content": "נתוני הבדיקה (JSON):\n"
-                       + json.dumps(payload, ensure_ascii=False)}],
-        )
-        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
-        data = _extract_json(text)
-    except Exception as exc:                        # network / API / parse — degrade quietly
-        out.latency_ms = int((time.monotonic() - start) * 1000)
-        out.error = f"תקלת AI: {type(exc).__name__}"
-        return out
+    data, errors = None, []
+    for name, used_model, call in providers:
+        try:                                        # network / API / parse — fall through
+            data = _extract_json(call(user_msg))
+            out.model = used_model
+            break
+        except Exception as exc:
+            errors.append(f"{name}: {type(exc).__name__}")
 
     out.latency_ms = int((time.monotonic() - start) * 1000)
+    if data is None:
+        out.error = "תקלת AI: " + " · ".join(errors)
+        return out
+
     out.headline = str(data.get("headline", "")).strip()
     out.threat_type = str(data.get("threat_type", "")).strip()
     out.summary = str(data.get("summary", "")).strip()
