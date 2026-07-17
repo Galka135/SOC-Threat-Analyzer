@@ -4,6 +4,7 @@ UI layer only. Data collection lives in analyzer/sources.py and the
 cross-source aggregation logic in analyzer/verdict.py.
 """
 
+import html as _html
 import ipaddress
 import json
 import os
@@ -535,6 +536,12 @@ def build_summary(ip, v, infra, reports):
     return "<br><br>".join(p)
 
 
+def _esc(text):
+    """AI output is derived from untrusted external data (hostnames, pulse
+    names…) and is rendered under unsafe_allow_html — always escape it."""
+    return _html.escape(str(text))
+
+
 def _ai_refine_html(ai):
     """The bounded score-refinement strip: deterministic anchor → AI suggestion."""
     base_c, adj_c = BAND[ai.baseline_level], BAND[ai.adjusted_level]
@@ -546,7 +553,7 @@ def _ai_refine_html(ai):
         delta_html = '<span class="ai-delta flat">ללא שינוי</span>'
     notes = []
     if ai.adjustment_reason:
-        notes.append(ai.adjustment_reason)
+        notes.append(_esc(ai.adjustment_reason))
     if ai.floor_locked:
         notes.append("רצפת בטיחות פעילה — ה-AI רשאי רק להעלות, לא להוריד את הציון.")
     if ai.clamped:
@@ -566,26 +573,26 @@ def _ai_refine_html(ai):
 def _ai_narrative_html(ai):
     parts = []
     if ai.summary:
-        parts.append(ai.summary)
+        parts.append(_esc(ai.summary))
     if ai.reasoning:
-        parts.append(f'<b>הנמקה:</b> {ai.reasoning}')
+        parts.append(f'<b>הנמקה:</b> {_esc(ai.reasoning)}')
     if ai.reconciliations:
-        items = "".join(f'<li>{r}</li>' for r in ai.reconciliations)
+        items = "".join(f'<li>{_esc(r)}</li>' for r in ai.reconciliations)
         parts.append(f'<b>יישוב סתירות בין מקורות:</b><ul class="ai-list">{items}</ul>')
     if ai.recommendations:
-        items = "".join(f'<li>{r}</li>' for r in ai.recommendations)
+        items = "".join(f'<li>{_esc(r)}</li>' for r in ai.recommendations)
         parts.append(f'<b>המלצות פעולה:</b><ol class="ai-list">{items}</ol>')
     return "<br><br>".join(parts)
 
 
 def render_ai_review(ai):
     color = BAND[ai.adjusted_level]
-    chip = f'<span class="ai-chip">{ai.threat_type}</span>' if ai.threat_type else ""
+    chip = f'<span class="ai-chip">{_esc(ai.threat_type)}</span>' if ai.threat_type else ""
     st.markdown(
         f'<div class="card ai-card lvl-{ai.adjusted_level}">'
         f'<div class="card-label">🤖 סקירת אנליסט AI'
-        f'<span class="ai-model mono">{ai.model}</span></div>'
-        f'<div class="ai-headline" style="color:{color}">{ai.headline}</div>'
+        f'<span class="ai-model mono">{_esc(ai.model)}</span></div>'
+        f'<div class="ai-headline" style="color:{color}">{_esc(ai.headline)}</div>'
         f'<div class="ai-meta">{chip}</div>'
         f'{_ai_refine_html(ai)}'
         f'<div class="summary ai-narrative">{_ai_narrative_html(ai)}</div>'

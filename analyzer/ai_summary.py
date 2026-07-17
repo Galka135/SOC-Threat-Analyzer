@@ -31,7 +31,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from analyzer.verdict import MALICIOUS_AT, SUSPICIOUS_AT, Verdict
+from analyzer.verdict import HIGH_RISK_OPINION, MALICIOUS_AT, SUSPICIOUS_AT, Verdict
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
@@ -146,6 +146,24 @@ def _extract_json(text: str) -> dict:
         return json.loads(match.group(0))
 
 
+def _floor_value(verdict: Verdict) -> int:
+    """The same safety floors verdict.py enforces, recomputed as a value so the
+    AI-adjusted score can never sink below them — even when the deterministic
+    score sat naturally above a floor (verdict.floors is empty in that case,
+    since a floor note is only written when a floor actually raised the score)."""
+    floor = 0
+    high = sum(1 for _, _, risk in verdict.flagged if (risk or 0) >= HIGH_RISK_OPINION)
+    if high >= 3:
+        floor = max(floor, 85)
+    elif high >= 2:
+        floor = max(floor, MALICIOUS_AT)
+    if verdict.masking["tor"].detected:
+        floor = max(floor, 45)
+    elif verdict.masking["vpn"].detected or verdict.masking["proxy"].detected:
+        floor = max(floor, SUSPICIOUS_AT)
+    return floor
+
+
 def _refine(review: AIReview, raw_score, verdict: Verdict) -> None:
     """Apply the bounded, floor-respecting clamp to the model's suggestion."""
     baseline = verdict.score
@@ -161,8 +179,12 @@ def _refine(review: AIReview, raw_score, verdict: Verdict) -> None:
     elif adjusted > hi:
         adjusted, review.clamped = hi, True
 
-    if verdict.floors and adjusted < baseline:      # a safety floor blocks washing clean
+    if verdict.floors and adjusted < baseline:      # a floor lifted the score — never wash below it
         adjusted, review.floor_locked = baseline, True
+    else:                                           # floors also bind as values on the way down
+        floor = min(_floor_value(verdict), baseline)
+        if adjusted < floor:
+            adjusted, review.floor_locked = floor, True
 
     review.adjusted_score = adjusted
     review.adjusted_level = _band(adjusted)
@@ -170,12 +192,18 @@ def _refine(review: AIReview, raw_score, verdict: Verdict) -> None:
 
 
 def _call_claude(user_msg: str, api_key: str, model: str, timeout: int) -> str:
-    from anthropic import Anthropic
+    from anthropic import Anthropic, BadRequestError
     client = Anthropic(api_key=api_key, timeout=timeout)
-    resp = client.messages.create(
-        model=model, max_tokens=MAX_TOKENS, temperature=0, system=_SYSTEM,
-        messages=[{"role": "user", "content": user_msg}],
-    )
+    kwargs = dict(model=model, max_tokens=MAX_TOKENS, system=_SYSTEM,
+                  messages=[{"role": "user", "content": user_msg}])
+    try:
+        resp = client.messages.create(temperature=0, **kwargs)
+    except BadRequestError as exc:
+        # Claude 4.6+ / Sonnet 5 / Opus 4.7+ reject sampling params — retry
+        # without temperature so a user-overridden AI_MODEL still works.
+        if "temperature" not in str(exc).lower():
+            raise
+        resp = client.messages.create(**kwargs)
     return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
 
 
