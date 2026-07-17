@@ -34,6 +34,13 @@ Three strictly separated layers:
   caught by `_timed`). `run_scan` fans out all fetchers in a thread pool.
 - `analyzer/verdict.py` — pure aggregation, no I/O. Consumes only
   `SourceReport` fields.
+- `analyzer/ai_analyst.py` — optional LLM assessment layer. Provider chain is
+  Gemini (REST) → Claude (`anthropic` SDK, lazily imported so a missing
+  package never crashes the app) → the deterministic template summary. The
+  LLM output is html-escaped before rendering (scan data contains untrusted
+  external strings), and the system prompt tells the model to treat data
+  fields as data, not instructions. Results are cached 1h keyed on the scan
+  payload; API keys are excluded from the cache key.
 - `app.py` — Streamlit UI only. Renders via HTML-string builders +
   `st.markdown(unsafe_allow_html=True)`; no business logic.
 

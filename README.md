@@ -50,6 +50,17 @@
 | 35–69 | 🟠 חשוד — נדרש תחקור |
 | 0–34 | 🟢 נקי |
 
+## 🤖 אנליסט AI (אופציונלי)
+
+מעל הסיכום המובנה, המערכת יכולה להפיק **הערכת אנליסט מבוססת LLM** שמצליבה
+את כל הממצאים, מזהה דפוסים וסתירות בין מקורות, וממליצה על פעולות:
+
+1. **Google Gemini** (`GEMINI_API_KEY`) — הספק הראשי
+2. **Anthropic Claude** (`ANTHROPIC_API_KEY`) — גיבוי אוטומטי אם Gemini נכשל
+3. ללא מפתחות / שני הספקים נכשלו — מוצג הסיכום המובנה בלבד, בלי שגיאות
+
+התוצאה נשמרת ב-cache לשעה כדי לא לחייב את ה-API בכל רענון.
+
 ## הפעלה
 
 ```bash
@@ -80,9 +91,10 @@ THREATFOX_AUTH_KEY = "..."   # אופציונלי — ThreatFox עובד גם ב
 ## מבנה הקוד
 
 ```
-app.py                # שכבת UI (Streamlit, RTL, עיצוב SOC כהה)
-analyzer/sources.py   # Fetcher מנורמל לכל מקור → SourceReport אחיד
-analyzer/verdict.py   # מנוע האגרגציה: קונצנזוס, שיא, אימות צולב, רצפות
+app.py                  # שכבת UI (Streamlit, RTL, עיצוב SOC כהה)
+analyzer/sources.py     # Fetcher מנורמל לכל מקור → SourceReport אחיד
+analyzer/verdict.py     # מנוע האגרגציה: קונצנזוס, שיא, אימות צולב, רצפות
+analyzer/ai_analyst.py  # שכבת ה-AI: Gemini → Claude → סיכום מובנה
 ```
 
 כל בדיקה ניתנת לייצוא כ-JSON מלא (לטיקט / SIEM) וכשורת IOC מוכנה להדבקה.

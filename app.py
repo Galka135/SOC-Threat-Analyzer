@@ -4,6 +4,7 @@ UI layer only. Data collection lives in analyzer/sources.py and the
 cross-source aggregation logic in analyzer/verdict.py.
 """
 
+import html
 import ipaddress
 import json
 import os
@@ -13,6 +14,7 @@ from datetime import datetime, timezone
 import streamlit as st
 
 from analyzer import compute_verdict, extract_exposure, extract_infrastructure, run_scan
+from analyzer.ai_analyst import build_payload, generate_ai_analysis
 from analyzer.sources import OPTIONAL_KEY, SOURCE_CHECKS
 
 # ─────────────────────────────────────────────────────────────
@@ -31,7 +33,8 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────
 SECRET_NAMES = ["VT_API_KEY", "ABUSE_API_KEY", "IPQS_KEY", "GREYNOISE_KEY",
                 "VPNAPI_KEY", "PROXYCHECK_KEY", "OTX_API_KEY", "CENSYS_PAT",
-                "IPINFO_TOKEN", "CRIMINALIP_KEY", "THREATFOX_AUTH_KEY"]
+                "IPINFO_TOKEN", "CRIMINALIP_KEY", "THREATFOX_AUTH_KEY",
+                "GEMINI_API_KEY", "ANTHROPIC_API_KEY"]
 
 
 def _secret(*names):
@@ -56,6 +59,10 @@ SECRET_ALIASES = {
                        "CRIMINALIP_TOKEN", "CRIMINALIP"],
     "THREATFOX_AUTH_KEY": ["THREATFOX_AUTH_KEY", "THREATFOX_KEY",
                            "THREATFOX_API_KEY", "ABUSECH_AUTH_KEY"],
+    "GEMINI_API_KEY": ["GEMINI_API_KEY", "GEMINI_KEY", "GOOGLE_API_KEY",
+                       "GOOGLE_GEMINI_KEY", "GEMINI"],
+    "ANTHROPIC_API_KEY": ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_KEY",
+                          "ANTHROPIC_KEY", "CLAUDE"],
 }
 
 KEYS = {name: _secret(*SECRET_ALIASES.get(name, [name])) for name in SECRET_NAMES}
@@ -243,6 +250,21 @@ h1, h2, h3, h4, p, span, div, label { font-family: 'Heebo', sans-serif; }
 .summary b { color: var(--ink); }
 .summary .good { color: var(--safe); } .summary .warn { color: var(--warn); } .summary .bad { color: var(--critical); }
 
+/* ── AI analyst card ── */
+.ai-card {
+    background: linear-gradient(135deg, rgba(167, 139, 250, 0.06), rgba(56, 189, 248, 0.04));
+    border: 1px solid rgba(167, 139, 250, 0.3); border-radius: 16px;
+    padding: 1.2rem 1.4rem; margin-top: 1rem;
+}
+.ai-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.8rem; }
+.ai-head span:first-child { font-weight: 800; font-size: 1rem; color: #C4B5FD; }
+.ai-badge {
+    font-family: var(--mono); font-size: 0.7rem; font-weight: 600; direction: ltr;
+    background: rgba(167, 139, 250, 0.12); border: 1px solid rgba(167, 139, 250, 0.3);
+    color: #C4B5FD; border-radius: 7px; padding: 3px 10px;
+}
+.ai-body { font-size: 0.97rem; line-height: 1.75; color: var(--ink-2); }
+
 /* copy line LTR */
 [data-testid="stCode"] { direction: ltr; text-align: left; }
 .stDownloadButton button { background: var(--surface-2) !important; color: var(--ink-2) !important; border: 1px solid var(--border) !important; border-radius: 10px !important; font-weight: 600 !important; width: 100%; }
@@ -298,6 +320,14 @@ def ring_svg(score, color):
 @st.cache_data(ttl=600, show_spinner=False)
 def cached_scan(ip, keys):
     return run_scan(ip, keys)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_ai_analysis(payload, _gemini_key, _anthropic_key):
+    """Cached per scan snapshot so reruns don't re-bill the LLM APIs.
+    Key args are underscore-prefixed: excluded from the cache key so
+    secrets never participate in hashing — the payload is the key."""
+    return generate_ai_analysis(payload, _gemini_key, _anthropic_key)
 
 
 def validate_target(raw):
@@ -504,6 +534,14 @@ with st.sidebar:
         else:
             st.markdown(f"⚪ **{name}** — חסר `{secret}`")
     st.divider()
+    st.markdown("### 🤖 אנליסט AI")
+    st.caption("Gemini מנותח ראשון; Claude משמש כגיבוי אוטומטי.")
+    for label, secret in [("Gemini", "GEMINI_API_KEY"), ("Claude", "ANTHROPIC_API_KEY")]:
+        if KEYS.get(secret):
+            st.markdown(f"🟢 **{label}** — מפתח מוגדר")
+        else:
+            st.markdown(f"⚪ **{label}** — חסר `{secret}`")
+    st.divider()
     with st.expander("📐 איך מחושב ה-Verdict?"):
         st.markdown("""
 1. כל מקור מחזיר **ציון סיכון מנורמל** (0-100) ומשקל אמינות.
@@ -600,6 +638,22 @@ if target:
                     unsafe_allow_html=True)
         st.markdown(f'<div class="summary">{build_summary(ip, verdict, infra, reports)}</div>',
                     unsafe_allow_html=True)
+
+        # ── AI deep assessment (Gemini → Claude → skip) ──
+        gemini_key, claude_key = KEYS.get("GEMINI_API_KEY", ""), KEYS.get("ANTHROPIC_API_KEY", "")
+        if gemini_key or claude_key:
+            with st.spinner("אנליסט ה-AI מנתח את הממצאים…"):
+                ai_text, ai_provider = cached_ai_analysis(
+                    build_payload(ip, verdict, infra, reports), gemini_key, claude_key)
+            if ai_text:
+                safe = html.escape(ai_text).replace("\n", "<br>")
+                st.markdown(
+                    f'<div class="ai-card"><div class="ai-head"><span>🤖 הערכת אנליסט AI</span>'
+                    f'<span class="ai-badge">{ai_provider} · {"Gemini 2.5 Flash" if ai_provider == "Gemini" else "Claude Opus 4.8"}</span></div>'
+                    f'<div class="ai-body">{safe}</div></div>',
+                    unsafe_allow_html=True)
+            elif ai_provider:  # both providers configured but failed — say so quietly
+                st.caption(f"⚠️ ניתוח AI לא זמין כרגע ({ai_provider}) — מוצג הסיכום המובנה בלבד.")
 
         st.markdown('<div class="section-title">// export //</div>', unsafe_allow_html=True)
         st.code(build_ticket_line(ip, verdict, infra, now_utc), language=None)
