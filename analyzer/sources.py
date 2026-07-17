@@ -23,6 +23,12 @@ import requests
 
 REQUEST_TIMEOUT = 10  # seconds per external call
 
+# AlienVault OTX's /general endpoint aggregates many sections (pulses, reputation,
+# passive DNS, malware…) so it is markedly slower than the other feeds. Give it a
+# longer per-attempt budget plus one retry for transient slowness.
+OTX_TIMEOUT = 12
+OTX_ATTEMPTS = 2
+
 
 @dataclass
 class SourceReport:
@@ -44,10 +50,10 @@ class SourceReport:
     link: str = ""
 
 
-def _get(url, headers=None, params=None, auth=None):
+def _get(url, headers=None, params=None, auth=None, timeout=REQUEST_TIMEOUT):
     """GET → (status_code, dict). Raises on network errors only."""
     r = requests.get(url, headers=headers, params=params, auth=auth,
-                     timeout=REQUEST_TIMEOUT)
+                     timeout=timeout)
     try:
         data = r.json()
     except ValueError:
@@ -289,8 +295,20 @@ def check_otx(ip, api_key):
         rep.enabled = False
         rep.error = "אין מפתח API"
         return rep
-    status, data = _get(f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
-                        headers={"X-OTX-API-KEY": api_key})
+    url = f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general"
+    status, data = 0, {}
+    for attempt in range(OTX_ATTEMPTS):
+        try:
+            status, data = _get(url, headers={"X-OTX-API-KEY": api_key}, timeout=OTX_TIMEOUT)
+            break
+        except requests.Timeout:
+            if attempt + 1 < OTX_ATTEMPTS:
+                continue  # transient slowness — try once more
+            rep.error = f"המקור לא הגיב בזמן (timeout ‏{OTX_TIMEOUT}ש׳ ×{OTX_ATTEMPTS})"
+            return rep
+        except requests.RequestException as exc:
+            rep.error = f"תקלת רשת: {type(exc).__name__}"
+            return rep
     if status != 200:
         rep.error = f"HTTP {status}"
         return rep
@@ -350,26 +368,61 @@ def check_shodan_idb(ip, _api_key=None):
 
 
 def check_censys(ip, pat):
+    """Supports both Censys credential formats:
+      • Censys Platform (current): "ORG_ID:PAT" — org id is numeric — Bearer
+        auth + organization_id query param against api.platform.censys.io.
+        A bare PAT (no org id) is also tried, but the Platform API normally
+        requires the org id and will answer with a clear auth error otherwise.
+      • Legacy Search API: "API_ID:API_SECRET" — the id is a UUID — HTTP Basic
+        auth against search.censys.io/api/v2.
+    """
     rep = SourceReport("censys", "Censys", weight=0.5,
-                       link=f"https://search.censys.io/hosts/{ip}")
+                       link=f"https://platform.censys.io/hosts/{ip}")
     if not pat:
         rep.enabled = False
         rep.error = "אין מפתח API"
         return rep
+
+    org_id, token, legacy = None, pat.strip(), False
     if ":" in pat:
+        left, right = pat.split(":", 1)
+        if left.strip().isdigit():          # numeric left → Platform org id
+            org_id, token = left.strip(), right.strip()
+        else:                                # UUID left → legacy id:secret
+            legacy = True
+
+    if legacy:
         uid, secret = pat.split(":", 1)
-        status, data = _get(f"https://search.censys.io/api/v2/hosts/{ip}", auth=(uid, secret))
-    else:
         status, data = _get(f"https://search.censys.io/api/v2/hosts/{ip}",
-                            headers={"Authorization": f"Bearer {pat}"})
+                            auth=(uid.strip(), secret.strip()))
+    else:
+        params = {"organization_id": org_id} if org_id else None
+        status, data = _get(f"https://api.platform.censys.io/v3/global/asset/host/{ip}",
+                            headers={"Authorization": f"Bearer {token}",
+                                     "Accept": "application/json"},
+                            params=params)
+
     if status != 200:
-        rep.error = _dget(data, "error", default=f"HTTP {status}")
+        msg = (_dget(data, "error", default=None) or _dget(data, "message", default=None)
+               or _dget(data, "error", "message", default=None))
+        if status in (401, 403) and not legacy:
+            # Free accounts need no org id; a failure here means a bad/partial PAT.
+            msg = ("אימות נכשל — ודא שה-PAT הועתק במלואו "
+                   "(חשבון חינמי אינו דורש Organization ID)")
+        rep.error = msg or f"HTTP {status}"
         return rep
 
-    services = _dget(data, "result", "services", default=[]) or []
+    # Legacy nests services under result.services; Platform under
+    # result.resource.services — accept either so both formats parse.
+    services = (_dget(data, "result", "resource", "services", default=None)
+                or _dget(data, "result", "services", default=None)
+                or _dget(data, "resource", "services", default=None)
+                or (data.get("services") if isinstance(data, dict) else None)
+                or [])
     if not isinstance(services, list):
         services = []
-    ports = [f"{s.get('port', '?')}/{s.get('service_name', '?')}"
+    ports = [f"{s.get('port', '?')}/"
+             f"{s.get('service_name') or s.get('protocol') or s.get('extended_service_name') or '?'}"
              for s in services if isinstance(s, dict)]
 
     rep.ok = True

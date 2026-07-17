@@ -25,7 +25,7 @@ every 6h so it doesn't sleep — its `APP_URL` must track the real deployment.
 
 ## Architecture
 
-Three strictly separated layers:
+Four strictly separated layers:
 
 - `analyzer/sources.py` — one fetcher per intelligence feed. Every fetcher
   returns the same normalized `SourceReport`; nothing outside this file knows
@@ -34,13 +34,11 @@ Three strictly separated layers:
   caught by `_timed`). `run_scan` fans out all fetchers in a thread pool.
 - `analyzer/verdict.py` — pure aggregation, no I/O. Consumes only
   `SourceReport` fields.
-- `analyzer/ai_analyst.py` — optional LLM assessment layer. Provider chain is
-  Gemini (REST) → Claude (`anthropic` SDK, lazily imported so a missing
-  package never crashes the app) → the deterministic template summary. The
-  LLM output is html-escaped before rendering (scan data contains untrusted
-  external strings), and the system prompt tells the model to treat data
-  fields as data, not instructions. Results are cached 1h keyed on the scan
-  payload; API keys are excluded from the cache key.
+- `analyzer/ai_summary.py` — optional AI analyst review over the verdict +
+  reports. One external call per attempt — Gemini (free, REST via `requests`)
+  first, Claude (Anthropic SDK) as fallback; like a source it never raises —
+  missing keys / package / API error returns `AIReview(ok=False)` with a Hebrew
+  error. Consumes `SourceReport` + `Verdict` + infra/exposure dicts only.
 - `app.py` — Streamlit UI only. Renders via HTML-string builders +
   `st.markdown(unsafe_allow_html=True)`; no business logic.
 
@@ -65,6 +63,28 @@ independent corroboration outrank any single score. Bands: ≥70 MALICIOUS,
 ≥35 SUSPICIOUS. `confidence` is coverage × agreement, capped at 55 with <3
 opinions.
 
+### AI analyst layer (`analyzer/ai_summary.py`)
+
+The verdict engine stays the authoritative, reproducible score. `ai_review`
+adds narrative, conflict reconciliation, threat classification, and a **bounded
+score refinement** — enforced in code, never trusted to the model:
+
+- the suggested score is clamped to **±`MAX_DELTA` (15)** of `verdict.score`;
+- when `verdict.floors` is non-empty (a safety floor fired) the AI may only
+  **escalate** — `_refine` locks `adjusted_score >= baseline` (`floor_locked`);
+- `temperature=0` for run-to-run stability; JSON is extracted tolerantly
+  (`_extract_json`) so prose-wrapped output still parses.
+
+Providers: Gemini (`GEMINI_API_KEY`, free tier, default `gemini-2.5-flash`) is
+tried first; Claude (`ANTHROPIC_API_KEY`) is the fallback. Either key alone
+works; `AIReview.model` records which provider actually answered.
+
+Both the deterministic and AI-adjusted scores are shown side by side and stored
+in the JSON export under `ai_review`. The layer is cached per `(ip, models)` via
+`cached_ai_review` (underscore-prefixed args carry the unhashable payload). To
+change bands/floor logic keep `ai_summary._band` in sync with `verdict` — it
+imports `MALICIOUS_AT` / `SUSPICIOUS_AT` from there rather than re-hardcoding.
+
 ### Adding an intelligence source
 
 1. Write `check_<name>(ip, api_key) -> SourceReport` in `sources.py`
@@ -81,7 +101,9 @@ opinions.
 
 - **All API keys are optional.** A missing key disables its source
   (`enabled=False`); never `st.stop()` or crash on missing secrets. Keys come
-  from `st.secrets` with `os.environ` fallback (`_secret` in app.py).
+  from `st.secrets` with `os.environ` fallback (`_secret` in app.py). The same
+  applies to `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` — missing both just hides
+  the AI panel.
 - **Never commit secrets** — `.streamlit/secrets.toml` is git-ignored;
   document new key names in `.streamlit/secrets.toml.example` with empty
   values only.
